@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pwa-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "serve", "pwa", "-l", "5500"],
+      "port": 5500
+    }
+  ]
+}

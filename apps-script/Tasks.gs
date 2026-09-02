@@ -143,6 +143,13 @@ function setDay_(id, day) {
   return cleanTask_(t);
 }
 
+function setProject_(id, project) {
+  var t = findTaskRow_(id);
+  updateRowFields_(TASKS_SHEET, t.__row, { project: project || '' });
+  t.project = project || '';
+  return cleanTask_(t);
+}
+
 /**
  * เพิ่ม project ใหม่เข้า master list ของ workspace (ไม่เพิ่มซ้ำถ้ามีชื่อนี้อยู่แล้ว)
  * คืนค่า master list ล่าสุดทั้งหมดของ workspace นั้นกลับไป

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>todo-system</title>
+  <meta name="theme-color" content="#5b8a72">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <p class="app-title">todo-system</p>
+    <div class="tabs" id="workspace-tabs">
+      <button class="tab-btn active" data-workspace="Personal">Personal</button>
+      <button class="tab-btn" data-workspace="Office">Office</button>
+    </div>
+    <div class="tabs view-tabs" id="view-tabs">
+      <button class="tab-btn active" data-view="today">วันนี้</button>
+      <button class="tab-btn" data-view="week">สัปดาห์</button>
+    </div>
+  </header>
+
+  <form class="capture-form" id="capture-form">
+    <input type="text" id="capture-input" placeholder="พิมพ์งานแล้วกด Enter…" autocomplete="off">
+  </form>
+
+  <main>
+    <div class="week-nav" id="week-nav" hidden>
+      <button class="icon-btn" id="week-prev" aria-label="สัปดาห์ก่อนหน้า">‹</button>
+      <span class="range" id="week-range"></span>
+      <button class="icon-btn" id="week-next" aria-label="สัปดาห์ถัดไป">›</button>
+    </div>
+    <button class="today-jump" id="today-jump" hidden>กลับไปสัปดาห์นี้</button>
+
+    <div id="board"></div>
+
+    <div class="someday-section">
+      <p class="someday-heading">Someday / Note</p>
+      <form class="someday-form" id="someday-form">
+        <input type="text" id="someday-input" placeholder="งานไม่รีบ ไม่ผูกวัน…" autocomplete="off">
+      </form>
+      <div class="task-list" id="someday-list"></div>
+    </div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
