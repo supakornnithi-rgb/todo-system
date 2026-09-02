@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+Thumbs.db
+
+# มี Spreadsheet ID / Web App URL / รายละเอียดภายในโปรเจกต์ — ไม่ต้องการให้อยู่ใน repo สาธารณะ
+HANDOFF.md
