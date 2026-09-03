@@ -47,6 +47,37 @@ header {
   border-bottom: 1px solid var(--border);
 }
 
+.loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  width: 100%;
+  z-index: 100;
+  overflow: hidden;
+  background: transparent;
+}
+
+.loading-bar.active::before {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--accent);
+  animation: loading-slide 1s ease-in-out infinite;
+}
+
+@keyframes loading-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.status-line {
+  font-size: 12px;
+  color: var(--accent);
+  margin: -4px 0 8px;
+}
+
 .app-title {
   font-size: 15px;
   font-weight: 600;
@@ -312,6 +343,81 @@ main {
   background: transparent;
   border: 1px dashed var(--border);
   color: var(--text-soft);
+}
+
+.subtask-toggle {
+  display: block;
+  margin-top: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.subtask-box {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.subtask-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.subtask-check {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 9px;
+  padding: 0;
+}
+
+.subtask-row.done .subtask-check {
+  background: var(--done);
+  border-color: var(--done);
+}
+
+.subtask-title {
+  font-size: 13px;
+}
+
+.subtask-row.done .subtask-title {
+  color: var(--text-soft);
+  text-decoration: line-through;
+}
+
+.subtask-form {
+  margin-top: 2px;
+}
+
+.subtask-form input {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  background: transparent;
+  color: var(--text);
+}
+
+.subtask-form input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .task-actions {

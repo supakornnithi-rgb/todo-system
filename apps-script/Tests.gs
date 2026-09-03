@@ -34,6 +34,22 @@ function test_weeklyCarryOver() {
   Logger.log('จำนวนงานแต่ละวันของ Office สัปดาห์นี้ (หลัง carry-over): ' + counts.join(', '));
 }
 
+function test_subtasks() {
+  var task = addTask_({ workspace: 'Personal', title: 'งานทดสอบ subtask' });
+  Logger.log('เพิ่มงานหลัก: ' + JSON.stringify(task));
+
+  var r1 = addSubtask_(task.id, 'งานย่อย 1');
+  Logger.log('เพิ่มงานย่อย 1: ' + JSON.stringify(r1));
+  var r2 = addSubtask_(task.id, 'งานย่อย 2');
+  Logger.log('เพิ่มงานย่อย 2: ' + JSON.stringify(r2));
+
+  var t1 = toggleSubtaskDone_(r1.subtask.id);
+  Logger.log('ติ๊กงานย่อย 1 เสร็จ (งานหลักควรยังไม่เสร็จ): ' + JSON.stringify(t1));
+
+  var t2 = toggleSubtaskDone_(r2.subtask.id);
+  Logger.log('ติ๊กงานย่อย 2 เสร็จ (งานหลักควรเสร็จอัตโนมัติ): ' + JSON.stringify(t2));
+}
+
 function test_someday() {
   var task = addTask_({ workspace: 'Office', title: 'งานไม่รีบ ทดสอบ someday', day: 'someday' });
   Logger.log('เพิ่มงาน someday สำเร็จ: ' + JSON.stringify(task));

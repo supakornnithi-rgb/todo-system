@@ -105,7 +105,8 @@ var state = {
   view: localStorage.getItem('ts_view') || 'today',
   weekStart: mondayOf(todayIso()),
   board: null,
-  projectFilter: null
+  projectFilter: null,
+  expandedTasks: new Set() // เก็บ id ของ task ที่กางดู subtask อยู่ (UI state ล้วนๆ ไม่ผูกกับ network)
 };
 
 // คืนเฉพาะงานที่ตรงกับ project filter ที่เลือกอยู่ (คืนทั้งหมดถ้าไม่ได้เลือก filter)
@@ -114,24 +115,103 @@ function filterTasks(tasks) {
   return tasks.filter(function (t) { return t.project === state.projectFilter; });
 }
 
+// ---------- แก้ state.board ในเครื่องโดยตรงจากผลลัพธ์ POST เพื่อไม่ต้อง loadBoard() ซ้ำ (เร็วขึ้นเท่าตัว) ----------
+function byCreatedAt(a, b) { return a.createdAt < b.createdAt ? -1 : (a.createdAt > b.createdAt ? 1 : 0); }
+
+function removeTaskLocal(id) {
+  if (!state.board) return;
+  state.board.days.forEach(function (d) {
+    var idx = d.tasks.findIndex(function (t) { return t.id === id; });
+    if (idx !== -1) d.tasks.splice(idx, 1);
+  });
+  var idx2 = state.board.someday.findIndex(function (t) { return t.id === id; });
+  if (idx2 !== -1) state.board.someday.splice(idx2, 1);
+}
+
+function insertTaskLocal(task) {
+  if (!state.board) return;
+  if (task.day === 'someday') {
+    state.board.someday.push(task);
+    state.board.someday.sort(byCreatedAt);
+  } else {
+    var day = state.board.days.find(function (d) { return d.date === task.day; });
+    if (day) {
+      day.tasks.push(task);
+      day.tasks.sort(byCreatedAt);
+    }
+    // ถ้า task.day ไม่ได้อยู่ในสัปดาห์ที่กำลังเปิดดูอยู่ตอนนี้ ก็แค่ไม่โผล่ในมุมมองปัจจุบัน ถูกต้องแล้ว
+  }
+}
+
+// ลบตำแหน่งเดิมแล้วแทรกใหม่ตาม day ล่าสุดของ task — ใช้ได้ทั้งกรณีแก้ field เฉยๆ (day เดิม) และย้ายวัน (day เปลี่ยน)
+function upsertTaskLocal(task) {
+  removeTaskLocal(task.id);
+  insertTaskLocal(task);
+}
+
 // ---------- theme ----------
 function applyMonthTheme() {
   var humanMonth = new Date().getMonth() + 1;
   document.documentElement.dataset.monthParity = (humanMonth % 2 === 0) ? 'even' : 'odd';
 }
 
-// ทุก action ที่แก้ข้อมูล (POST) เรียกผ่านตัวนี้ให้หมด — เช็ค res.ok ให้อัตโนมัติ,
-// โชว์ toast แจ้ง error ถ้าพัง, และ reload บอร์ดใหม่ให้ถ้าสำเร็จ
-function mutate(promise, successToast) {
+// ---------- แถบสถานะ/loading (นับซ้อนกันได้ด้วยตัวนับ กันกรณี action ซ้อน action) ----------
+var loadingCount = 0;
+function setLoading(active, label) {
+  var bar = document.getElementById('loading-bar');
+  var status = document.getElementById('status-line');
+  if (active) {
+    loadingCount++;
+    bar.classList.add('active');
+    status.textContent = label || 'กำลังโหลด...';
+    status.hidden = false;
+  } else {
+    loadingCount = Math.max(0, loadingCount - 1);
+    if (loadingCount === 0) {
+      bar.classList.remove('active');
+      status.hidden = true;
+    }
+  }
+}
+
+// วาดหน้าจอใหม่ทั้งหมดจาก state.board ปัจจุบัน — เรียกได้ทั้งหลัง loadBoard() ยิง network จริง
+// และหลัง mutate() แก้ state.board ในเครื่องตรงๆ (optimistic update) โดยไม่ต้องยิง network ซ้ำ
+function refreshUI() {
+  renderTabs();
+  renderProjectFilter();
+  renderOverdueBanner();
+  renderBoard();
+  renderSomeday();
+}
+
+/**
+ * ทุก action ที่แก้ข้อมูล (POST) เรียกผ่านตัวนี้ให้หมด
+ * ถ้าสำเร็จและมี opts.apply (แก้ state.board ในเครื่องได้เอง เช่น toggleDone) จะอัปเดตหน้าจอจาก
+ * ผลลัพธ์ที่ได้กลับมาทันที ไม่ยิง network ซ้ำรอบสอง — เร็วขึ้นประมาณครึ่งหนึ่งเทียบของเดิมที่ reload ทุกครั้ง
+ * ถ้าไม่มี opts.apply (เช่น compound action) หรือเกิด error/เชื่อมต่อพัง จะ loadBoard() ใหม่เสมอ
+ * เพื่อให้เห็นสถานะจริงบนชีต (เชื่อมต่อพังไม่ได้แปลว่างานไม่ถูกบันทึกจริง — Apps Script อาจเขียนสำเร็จ
+ * ไปแล้วแค่ตอบกลับมาไม่ถึง)
+ */
+function mutate(promise, opts) {
+  opts = opts || {};
+  setLoading(true, opts.loadingLabel || 'กำลังบันทึก...');
   return promise.then(function (res) {
-    if (!res.ok) { showToast('ผิดพลาด: ' + (res.error || 'ไม่ทราบสาเหตุ')); return; }
-    if (successToast) showToast(successToast);
+    if (!res.ok) {
+      showToast('ผิดพลาด: ' + (res.error || 'ไม่ทราบสาเหตุ'));
+      return loadBoard();
+    }
+    if (opts.successToast) showToast(opts.successToast);
+    if (opts.apply) {
+      opts.apply(res.result);
+      refreshUI();
+    } else {
+      return loadBoard();
+    }
   }).catch(function (err) {
-    // การเชื่อมต่อพังไม่ได้แปลว่างานไม่ถูกบันทึก (Apps Script อาจเขียนสำเร็จไปแล้วแค่ตอบกลับไม่ถึง)
-    // เลย reload บอร์ดเสมอไม่ว่าจะสำเร็จหรือพัง เพื่อให้เห็นสถานะจริงบนชีตเสมอ ไม่ค้างข้อมูลเก่า
     showToast(err.message);
+    return loadBoard();
   }).then(function () {
-    loadBoard();
+    setLoading(false);
   });
 }
 
@@ -163,6 +243,59 @@ function renderTabs() {
   }
 }
 
+function applyTask(task) { upsertTaskLocal(task); }
+
+function subtaskProgressLabel(subtasks) {
+  var total = subtasks.length;
+  if (total === 0) return 'งานย่อย';
+  var done = subtasks.filter(function (s) { return s.done; }).length;
+  return done + '/' + total + ' งานย่อย';
+}
+
+function subtaskBoxEl(task) {
+  var box = document.createElement('div');
+  box.className = 'subtask-box';
+
+  (task.subtasks || []).forEach(function (s) {
+    var row = document.createElement('div');
+    row.className = 'subtask-row' + (s.done ? ' done' : '');
+
+    var sCheck = document.createElement('button');
+    sCheck.className = 'subtask-check';
+    sCheck.textContent = s.done ? '✓' : '';
+    sCheck.addEventListener('click', function () {
+      mutate(apiPost('toggleSubtaskDone', { id: s.id }), {
+        apply: function (result) { applyTask(result.task); }
+      });
+    });
+
+    var sTitle = document.createElement('span');
+    sTitle.className = 'subtask-title';
+    sTitle.textContent = s.title;
+
+    row.appendChild(sCheck);
+    row.appendChild(sTitle);
+    box.appendChild(row);
+  });
+
+  var form = document.createElement('form');
+  form.className = 'subtask-form';
+  var input = document.createElement('input');
+  input.placeholder = 'เพิ่มงานย่อย…';
+  form.appendChild(input);
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var subTitle = input.value.trim();
+    if (!subTitle) return;
+    mutate(apiPost('addSubtask', { taskId: task.id, title: subTitle }), {
+      apply: function (result) { applyTask(result.task); }
+    });
+  });
+  box.appendChild(form);
+
+  return box;
+}
+
 function taskCardEl(task, opts) {
   var card = document.createElement('div');
   card.className = 'task-card' + (task.done ? ' done' : '');
@@ -172,7 +305,7 @@ function taskCardEl(task, opts) {
   check.textContent = task.done ? '✓' : '';
   check.setAttribute('aria-label', 'เสร็จ/ยังไม่เสร็จ');
   check.addEventListener('click', function () {
-    mutate(apiPost('toggleDone', { id: task.id }));
+    mutate(apiPost('toggleDone', { id: task.id }), { apply: applyTask });
   });
 
   var body = document.createElement('div');
@@ -189,6 +322,21 @@ function taskCardEl(task, opts) {
   chip.addEventListener('click', function () { openProjectPicker(task); });
   body.appendChild(chip);
 
+  var isExpanded = state.expandedTasks.has(task.id);
+  var subtaskToggle = document.createElement('button');
+  subtaskToggle.className = 'subtask-toggle';
+  subtaskToggle.textContent = (isExpanded ? '▾ ' : '▸ ') + subtaskProgressLabel(task.subtasks || []);
+  subtaskToggle.addEventListener('click', function () {
+    if (state.expandedTasks.has(task.id)) state.expandedTasks.delete(task.id);
+    else state.expandedTasks.add(task.id);
+    refreshUI();
+  });
+  body.appendChild(subtaskToggle);
+
+  if (isExpanded) {
+    body.appendChild(subtaskBoxEl(task));
+  }
+
   var actions = document.createElement('div');
   actions.className = 'task-actions';
 
@@ -197,7 +345,7 @@ function taskCardEl(task, opts) {
     toToday.textContent = '↥';
     toToday.title = 'ย้ายขึ้นวันนี้';
     toToday.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: todayIso() }), 'ย้ายขึ้นวันนี้แล้ว');
+      mutate(apiPost('setDay', { id: task.id, day: todayIso() }), { successToast: 'ย้ายขึ้นวันนี้แล้ว', apply: applyTask });
     });
     actions.appendChild(toToday);
   } else {
@@ -205,19 +353,19 @@ function taskCardEl(task, opts) {
     prev.textContent = '←';
     prev.title = 'เลื่อนไปวันก่อนหน้า';
     prev.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: addDaysIso(task.day, -1) }));
+      mutate(apiPost('setDay', { id: task.id, day: addDaysIso(task.day, -1) }), { apply: applyTask });
     });
     var next = document.createElement('button');
     next.textContent = '→';
     next.title = 'เลื่อนไปวันถัดไป';
     next.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: addDaysIso(task.day, 1) }));
+      mutate(apiPost('setDay', { id: task.id, day: addDaysIso(task.day, 1) }), { apply: applyTask });
     });
     var toSomeday = document.createElement('button');
     toSomeday.textContent = '↧';
     toSomeday.title = 'ย้ายไป Someday';
     toSomeday.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: 'someday' }), 'ย้ายไป Someday แล้ว');
+      mutate(apiPost('setDay', { id: task.id, day: 'someday' }), { successToast: 'ย้ายไป Someday แล้ว', apply: applyTask });
     });
     actions.appendChild(prev);
     actions.appendChild(next);
@@ -393,7 +541,7 @@ function openProjectPicker(task) {
     clearBtn.textContent = '✕ เอาออก';
     clearBtn.addEventListener('click', function () {
       closeProjectPicker();
-      mutate(apiPost('setProject', { id: task.id, project: '' }));
+      mutate(apiPost('setProject', { id: task.id, project: '' }), { apply: applyTask });
     });
     optionList.appendChild(clearBtn);
   }
@@ -403,7 +551,7 @@ function openProjectPicker(task) {
     btn.textContent = name;
     btn.addEventListener('click', function () {
       closeProjectPicker();
-      mutate(apiPost('setProject', { id: task.id, project: name }));
+      mutate(apiPost('setProject', { id: task.id, project: name }), { apply: applyTask });
     });
     optionList.appendChild(btn);
   });
@@ -454,18 +602,18 @@ function closeProjectPicker() {
 
 // ---------- data loading ----------
 function loadBoard() {
-  apiGet({ action: 'getBoard', workspace: state.workspace, weekStart: state.weekStart })
+  setLoading(true, 'กำลังโหลดข้อมูล...');
+  return apiGet({ action: 'getBoard', workspace: state.workspace, weekStart: state.weekStart })
     .then(function (res) {
       if (!res.ok) throw new Error(res.error || 'โหลดข้อมูลไม่สำเร็จ');
       state.board = res.data;
-      renderTabs();
-      renderProjectFilter();
-      renderOverdueBanner();
-      renderBoard();
-      renderSomeday();
+      refreshUI();
     })
     .catch(function (err) {
       showToast('ผิดพลาด: ' + err.message);
+    })
+    .then(function () {
+      setLoading(false);
     });
 }
 
@@ -511,7 +659,7 @@ document.getElementById('capture-form').addEventListener('submit', function (e) 
   var day = daySelect.value || todayIso();
   input.value = '';
   renderCaptureDayOptions(); // รีเซ็ตกลับเป็นวันนี้ให้ครั้งถัดไป ไม่ค้างวันที่เพิ่งเลือก
-  mutate(apiPost('addTask', { workspace: state.workspace, title: title, day: day }));
+  mutate(apiPost('addTask', { workspace: state.workspace, title: title, day: day }), { apply: insertTaskLocal });
 });
 
 document.getElementById('someday-form').addEventListener('submit', function (e) {
@@ -520,7 +668,7 @@ document.getElementById('someday-form').addEventListener('submit', function (e) 
   var title = input.value.trim();
   if (!title) return;
   input.value = '';
-  mutate(apiPost('addTask', { workspace: state.workspace, title: title, day: 'someday' }));
+  mutate(apiPost('addTask', { workspace: state.workspace, title: title, day: 'someday' }), { apply: insertTaskLocal });
 });
 
 // ---------- init ----------

@@ -36,6 +36,12 @@ function doPost(e) {
       case 'addProject':
         result = addProject_(body.workspace, body.projectName);
         break;
+      case 'addSubtask':
+        result = addSubtask_(body.taskId, body.title);
+        break;
+      case 'toggleSubtaskDone':
+        result = toggleSubtaskDone_(body.id);
+        break;
       default:
         throw new Error('ไม่รู้จัก action: ' + body.action);
     }
