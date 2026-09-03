@@ -179,6 +179,63 @@ main {
   margin-bottom: 12px;
 }
 
+.workload-section {
+  margin-bottom: 10px;
+}
+
+.workload-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.workload-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 8px 0 10px;
+  background: var(--border);
+}
+
+.workload-bar span {
+  height: 100%;
+}
+
+.workload-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workload-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.workload-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.workload-label {
+  flex: 1;
+  color: var(--text);
+}
+
+.workload-value {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
 .project-filter {
   display: flex;
   gap: 6px;

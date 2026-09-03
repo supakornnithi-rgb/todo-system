@@ -133,7 +133,8 @@ var state = {
   weekStart: mondayOf(todayIso()),
   board: null,
   projectFilter: null,
-  expandedTasks: new Set() // เก็บ id ของ task ที่กางดู subtask อยู่ (UI state ล้วนๆ ไม่ผูกกับ network)
+  expandedTasks: new Set(), // เก็บ id ของ task ที่กางดู subtask อยู่ (UI state ล้วนๆ ไม่ผูกกับ network)
+  workloadExpanded: false
 };
 
 // คืนเฉพาะงานที่ตรงกับ project filter ที่เลือกอยู่ (คืนทั้งหมดถ้าไม่ได้เลือก filter)
@@ -207,6 +208,7 @@ function refreshUI() {
   renderTabs();
   renderProjectFilter();
   renderOverdueBanner();
+  renderWorkloadOverview();
   renderBoard();
   renderSomeday();
 }
@@ -626,6 +628,90 @@ function renderProjectFilter() {
     });
     el.appendChild(btn);
   });
+}
+
+// ---------- ภาพรวมงานค้างต่อ project (สัดส่วนงานยังไม่เสร็จของสัปดาห์ที่กำลังดูอยู่ + someday) ----------
+var NO_PROJECT_LABEL = '(ไม่มี project)';
+var NO_PROJECT_COLOR = '#a8a196';
+
+function computeWorkloadStats() {
+  var pending = [];
+  state.board.days.forEach(function (d) { d.tasks.forEach(function (t) { if (!t.done) pending.push(t); }); });
+  state.board.someday.forEach(function (t) { if (!t.done) pending.push(t); });
+
+  var counts = {};
+  pending.forEach(function (t) {
+    var key = t.project || NO_PROJECT_LABEL;
+    counts[key] = (counts[key] || 0) + 1;
+  });
+
+  var total = pending.length;
+  return Object.keys(counts)
+    .map(function (name) { return { name: name, count: counts[name], pct: total ? Math.round(counts[name] / total * 100) : 0 }; })
+    .sort(function (a, b) { return b.count - a.count; });
+}
+
+function renderWorkloadOverview() {
+  var el = document.getElementById('workload-section');
+  el.innerHTML = '';
+  if (!state.board) return;
+
+  var stats = computeWorkloadStats();
+  var total = stats.reduce(function (s, x) { return s + x.count; }, 0);
+
+  var toggle = document.createElement('button');
+  toggle.className = 'workload-toggle';
+  toggle.textContent = (state.workloadExpanded ? '▾ ' : '▸ ') + 'ภาพรวมงานค้าง' + (total ? ' (' + total + ' งาน)' : '');
+  toggle.addEventListener('click', function () {
+    state.workloadExpanded = !state.workloadExpanded;
+    renderWorkloadOverview();
+  });
+  el.appendChild(toggle);
+
+  if (!state.workloadExpanded) return;
+
+  if (total === 0) {
+    var hint = document.createElement('p');
+    hint.className = 'empty-hint';
+    hint.textContent = 'ไม่มีงานค้างในสัปดาห์นี้ 🎉';
+    el.appendChild(hint);
+    return;
+  }
+
+  var bar = document.createElement('div');
+  bar.className = 'workload-bar';
+  stats.forEach(function (s) {
+    var seg = document.createElement('span');
+    seg.style.width = s.pct + '%';
+    seg.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
+    bar.appendChild(seg);
+  });
+  el.appendChild(bar);
+
+  var list = document.createElement('div');
+  list.className = 'workload-list';
+  stats.forEach(function (s) {
+    var row = document.createElement('div');
+    row.className = 'workload-row';
+
+    var dot = document.createElement('span');
+    dot.className = 'workload-dot';
+    dot.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
+
+    var label = document.createElement('span');
+    label.className = 'workload-label';
+    label.textContent = s.name;
+
+    var value = document.createElement('span');
+    value.className = 'workload-value';
+    value.textContent = s.count + ' งาน · ' + s.pct + '%';
+
+    row.appendChild(dot);
+    row.appendChild(label);
+    row.appendChild(value);
+    list.appendChild(row);
+  });
+  el.appendChild(list);
 }
 
 // ---------- overdue banner ----------
