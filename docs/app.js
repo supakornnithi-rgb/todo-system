@@ -274,6 +274,33 @@ function renderTabs() {
 
 function applyTask(task) { upsertTaskLocal(task); }
 
+// แตะชื่องานเพื่อแก้ไขแบบ inline — Enter บันทึก, Escape ยกเลิก, คลิกที่อื่น (blur) ถือว่าบันทึกเหมือน Enter
+function startTitleEdit(titleEl, task) {
+  var input = document.createElement('input');
+  input.className = 'task-title-input';
+  input.value = task.title;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  var cancelled = false;
+  function commit() {
+    if (cancelled) return;
+    var newTitle = input.value.trim();
+    if (!newTitle || newTitle === task.title) {
+      refreshUI(); // ไม่มีอะไรเปลี่ยนหรือลบจนว่าง กลับไป render ปกติเฉยๆ
+      return;
+    }
+    mutate(apiPost('setTitle', { id: task.id, title: newTitle }), { apply: applyTask });
+  }
+
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { cancelled = true; refreshUI(); }
+  });
+}
+
 function subtaskProgressLabel(subtasks) {
   var total = subtasks.length;
   if (total === 0) return 'งานย่อย';
@@ -438,6 +465,8 @@ function taskCardEl(task, opts) {
   var title = document.createElement('div');
   title.className = 'task-title';
   title.textContent = task.title;
+  title.title = 'แตะเพื่อแก้ชื่องาน';
+  title.addEventListener('click', function () { startTitleEdit(title, task); });
   body.appendChild(title);
 
   var chip = document.createElement('button');
@@ -511,6 +540,12 @@ function taskCardEl(task, opts) {
   });
   actions.appendChild(del);
 
+  if (opts && opts.number) {
+    var numBadge = document.createElement('span');
+    numBadge.className = 'task-number';
+    numBadge.textContent = opts.number;
+    card.appendChild(numBadge);
+  }
   card.appendChild(check);
   card.appendChild(body);
   card.appendChild(actions);
@@ -546,7 +581,7 @@ function daySectionEl(date, tasks, isToday) {
     hint.textContent = 'ยังไม่มีงาน';
     list.appendChild(hint);
   } else {
-    tasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
+    tasks.forEach(function (t, idx) { list.appendChild(taskCardEl(t, { number: idx + 1 })); });
   }
   section.appendChild(list);
   return section;

@@ -191,6 +191,14 @@ function deleteTask_(id) {
   return { id: id };
 }
 
+function setTitle_(id, title) {
+  if (!title) throw new Error('ต้องระบุ title');
+  var t = findTaskRow_(id);
+  updateRowFields_(TASKS_SHEET, t.__row, { title: title });
+  t.title = title;
+  return cleanTask_(t, getSubtasksForTask_(id));
+}
+
 function setProject_(id, project) {
   var t = findTaskRow_(id);
   updateRowFields_(TASKS_SHEET, t.__row, { project: project || '' });

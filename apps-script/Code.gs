@@ -33,6 +33,9 @@ function doPost(e) {
       case 'deleteTask':
         result = deleteTask_(body.id);
         break;
+      case 'setTitle':
+        result = setTitle_(body.id, body.title);
+        break;
       case 'setProject':
         result = setProject_(body.id, body.project);
         break;
