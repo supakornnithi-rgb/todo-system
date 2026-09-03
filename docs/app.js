@@ -5,6 +5,37 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbx5hw8L7HkglAbqxWlSWWkJ
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+// โทนสีสุภาพชุดเดียวกับธีมหลัก — แต่ละชื่อ project ได้สีคงที่ของตัวเองจากการ hash ชื่อ ไม่ต้องตั้งเอง
+// และไม่ต้องเก็บสีไว้ที่ backend (ชื่อเดิม = สีเดิมเสมอ ไม่ว่าจะเปิดจากเครื่องไหน)
+const PROJECT_COLORS = [
+  { bg: '#e8eef4', fg: '#4d6d8f' }, // น้ำเงิน
+  { bg: '#e7f0ea', fg: '#4a7a5f' }, // เขียว
+  { bg: '#f4e8ee', fg: '#8f4d6d' }, // ชมพูหม่น
+  { bg: '#f4eee2', fg: '#8f6d3f' }, // น้ำตาลทอง
+  { bg: '#ece5f4', fg: '#6d4d8f' }, // ม่วง
+  { bg: '#f4e2e2', fg: '#8f4040' }, // แดงอิฐ
+  { bg: '#e2f0ef', fg: '#3f8f85' }, // ฟ้าอมเขียว (teal)
+  { bg: '#e6e5f4', fg: '#4f4d8f' }  // น้ำเงินอมม่วง (indigo)
+];
+
+function hashString(s) {
+  var h = 0;
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  // ผสมบิตให้กระจายดีขึ้น (MurmurHash3 finalizer) — hash แบบ polynomial เฉยๆ มีจุดอ่อนตรงที่
+  // ผลลัพธ์ mod เลขยกกำลัง 2 (ที่นี่คือ mod 8 จำนวนสีในชุด) ขึ้นกับบิตต่ำๆ เท่านั้น ทำให้บางชื่อ
+  // (เช่น "CRAFTFITI", "PERSONAL") ดันตกกลุ่มสีเดียวกันหมดโดยบังเอิญ ถ้าไม่ผสมบิตก่อน
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return Math.abs(h);
+}
+
+function colorForProject(name) {
+  return PROJECT_COLORS[hashString(name) % PROJECT_COLORS.length];
+}
+
 // ---------- date utils (ทำงานบนวันที่ปฏิทินล้วนๆ ไม่ยุ่งกับ timezone ของ string parsing) ----------
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
@@ -410,6 +441,11 @@ function taskCardEl(task, opts) {
   var chip = document.createElement('button');
   chip.className = 'project-chip' + (task.project ? '' : ' empty');
   chip.textContent = task.project || '+ project';
+  if (task.project) {
+    var chipColor = colorForProject(task.project);
+    chip.style.background = chipColor.bg;
+    chip.style.color = chipColor.fg;
+  }
   chip.addEventListener('click', function () { openProjectPicker(task); });
   body.appendChild(chip);
 
@@ -575,8 +611,13 @@ function renderProjectFilter() {
 
   projects.forEach(function (name) {
     var btn = document.createElement('button');
-    btn.className = 'filter-chip' + (state.projectFilter === name ? ' active' : '');
+    var isActive = state.projectFilter === name;
+    btn.className = 'filter-chip' + (isActive ? ' active' : '');
     btn.textContent = name;
+    var chipColor = colorForProject(name);
+    btn.style.background = chipColor.bg;
+    btn.style.color = chipColor.fg;
+    if (isActive) btn.style.boxShadow = 'inset 0 0 0 2px ' + chipColor.fg;
     btn.addEventListener('click', function () {
       state.projectFilter = name;
       renderProjectFilter();
@@ -657,6 +698,10 @@ function openProjectPicker(task) {
   (state.board.projects || []).forEach(function (name) {
     var btn = document.createElement('button');
     btn.textContent = name;
+    var chipColor = colorForProject(name);
+    btn.style.background = chipColor.bg;
+    btn.style.color = chipColor.fg;
+    btn.style.borderColor = 'transparent';
     btn.addEventListener('click', function () {
       closeProjectPicker();
       mutate(apiPost('setProject', { id: task.id, project: name }), { apply: applyTask });
