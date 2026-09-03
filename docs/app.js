@@ -104,8 +104,15 @@ var state = {
   workspace: localStorage.getItem('ts_workspace') || 'Personal',
   view: localStorage.getItem('ts_view') || 'today',
   weekStart: mondayOf(todayIso()),
-  board: null
+  board: null,
+  projectFilter: null
 };
+
+// คืนเฉพาะงานที่ตรงกับ project filter ที่เลือกอยู่ (คืนทั้งหมดถ้าไม่ได้เลือก filter)
+function filterTasks(tasks) {
+  if (!state.projectFilter) return tasks;
+  return tasks.filter(function (t) { return t.project === state.projectFilter; });
+}
 
 // ---------- theme ----------
 function applyMonthTheme() {
@@ -223,7 +230,7 @@ function taskCardEl(task, opts) {
   return card;
 }
 
-function daySectionEl(day, isToday) {
+function daySectionEl(date, tasks, isToday) {
   var section = document.createElement('div');
   section.className = 'day-section';
 
@@ -234,18 +241,18 @@ function daySectionEl(day, isToday) {
     dot.className = 'dot';
     heading.appendChild(dot);
   }
-  heading.appendChild(document.createTextNode(formatDayHeading(day.date)));
+  heading.appendChild(document.createTextNode(formatDayHeading(date)));
   section.appendChild(heading);
 
   var list = document.createElement('div');
   list.className = 'task-list';
-  if (day.tasks.length === 0) {
+  if (tasks.length === 0) {
     var hint = document.createElement('p');
     hint.className = 'empty-hint';
     hint.textContent = 'ยังไม่มีงาน';
     list.appendChild(hint);
   } else {
-    day.tasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
+    tasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
   }
   section.appendChild(list);
   return section;
@@ -259,13 +266,13 @@ function renderBoard() {
   if (state.view === 'today') {
     var todayDay = state.board.days.find(function (d) { return d.date === state.board.today; });
     if (todayDay) {
-      boardEl.appendChild(daySectionEl(todayDay, true));
+      boardEl.appendChild(daySectionEl(todayDay.date, filterTasks(todayDay.tasks), true));
     }
   } else {
     var grid = document.createElement('div');
     grid.className = 'week-grid';
     state.board.days.forEach(function (d) {
-      grid.appendChild(daySectionEl(d, d.date === state.board.today));
+      grid.appendChild(daySectionEl(d.date, filterTasks(d.tasks), d.date === state.board.today));
     });
     boardEl.appendChild(grid);
   }
@@ -274,16 +281,91 @@ function renderBoard() {
 function renderSomeday() {
   var listEl = document.getElementById('someday-list');
   listEl.innerHTML = '';
-  if (!state.board || state.board.someday.length === 0) {
+  if (!state.board) return;
+  var tasks = filterTasks(state.board.someday);
+  if (tasks.length === 0) {
     var hint = document.createElement('p');
     hint.className = 'empty-hint';
-    hint.textContent = 'ยังไม่มีงานใน Someday';
+    hint.textContent = state.board.someday.length === 0 ? 'ยังไม่มีงานใน Someday' : 'ไม่มีงานของ project นี้ใน Someday';
     listEl.appendChild(hint);
     return;
   }
-  state.board.someday.forEach(function (t) {
+  tasks.forEach(function (t) {
     listEl.appendChild(taskCardEl(t, { somedayItem: true }));
   });
+}
+
+// ---------- project filter chips ----------
+function renderProjectFilter() {
+  var el = document.getElementById('project-filter');
+  el.innerHTML = '';
+  var projects = (state.board && state.board.projects) || [];
+  if (projects.length === 0) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+
+  var allBtn = document.createElement('button');
+  allBtn.className = 'filter-chip' + (state.projectFilter ? '' : ' active');
+  allBtn.textContent = 'ทั้งหมด';
+  allBtn.addEventListener('click', function () {
+    state.projectFilter = null;
+    renderProjectFilter();
+    renderBoard();
+    renderSomeday();
+  });
+  el.appendChild(allBtn);
+
+  projects.forEach(function (name) {
+    var btn = document.createElement('button');
+    btn.className = 'filter-chip' + (state.projectFilter === name ? ' active' : '');
+    btn.textContent = name;
+    btn.addEventListener('click', function () {
+      state.projectFilter = name;
+      renderProjectFilter();
+      renderBoard();
+      renderSomeday();
+    });
+    el.appendChild(btn);
+  });
+}
+
+// ---------- overdue banner ----------
+function renderOverdueBanner() {
+  var el = document.getElementById('overdue-banner');
+  if (!state.board) { el.hidden = true; return; }
+  var count = 0;
+  state.board.days.forEach(function (d) {
+    if (d.date < state.board.today) {
+      d.tasks.forEach(function (t) { if (!t.done) count++; });
+    }
+  });
+  if (count === 0) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = '⚠️ มีงานค้างจากวันก่อนหน้ายังไม่เสร็จ ' + count + ' งาน';
+}
+
+// ---------- capture day picker ----------
+// ตัวเลือกวันของฟอร์ม quick capture อิงสัปดาห์ปัจจุบันจริงเสมอ (ไม่อิงสัปดาห์ที่กำลังเปิดดูอยู่ใน
+// มุมมอง Week) เพราะ requirement คือ "เลือกวันในสัปดาห์นี้ได้ ไม่เลือกก็ลงวันนี้" — ค่า default รีเซ็ต
+// กลับเป็นวันนี้ทุกครั้งหลังเพิ่มงานสำเร็จ ไม่ค้างค่าที่เลือกไว้ก่อนหน้า
+function renderCaptureDayOptions() {
+  var select = document.getElementById('capture-day');
+  select.innerHTML = '';
+  var monday = mondayOf(todayIso());
+  var today = todayIso();
+  for (var i = 0; i < 7; i++) {
+    var date = addDaysIso(monday, i);
+    var opt = document.createElement('option');
+    opt.value = date;
+    opt.textContent = (date === today ? 'วันนี้' : formatDayHeading(date));
+    select.appendChild(opt);
+  }
+  select.value = today;
 }
 
 // ---------- project picker ----------
@@ -377,6 +459,8 @@ function loadBoard() {
       if (!res.ok) throw new Error(res.error || 'โหลดข้อมูลไม่สำเร็จ');
       state.board = res.data;
       renderTabs();
+      renderProjectFilter();
+      renderOverdueBanner();
       renderBoard();
       renderSomeday();
     })
@@ -390,6 +474,7 @@ document.getElementById('workspace-tabs').addEventListener('click', function (e)
   var btn = e.target.closest('.tab-btn');
   if (!btn) return;
   state.workspace = btn.dataset.workspace;
+  state.projectFilter = null; // project คนละชุดกันต่อ workspace เลยรีเซ็ต filter ทุกครั้งที่สลับ
   localStorage.setItem('ts_workspace', state.workspace);
   loadBoard();
   renderTabs();
@@ -420,10 +505,13 @@ document.getElementById('today-jump').addEventListener('click', function () {
 document.getElementById('capture-form').addEventListener('submit', function (e) {
   e.preventDefault();
   var input = document.getElementById('capture-input');
+  var daySelect = document.getElementById('capture-day');
   var title = input.value.trim();
   if (!title) return;
+  var day = daySelect.value || todayIso();
   input.value = '';
-  mutate(apiPost('addTask', { workspace: state.workspace, title: title }));
+  renderCaptureDayOptions(); // รีเซ็ตกลับเป็นวันนี้ให้ครั้งถัดไป ไม่ค้างวันที่เพิ่งเลือก
+  mutate(apiPost('addTask', { workspace: state.workspace, title: title, day: day }));
 });
 
 document.getElementById('someday-form').addEventListener('submit', function (e) {
@@ -438,6 +526,7 @@ document.getElementById('someday-form').addEventListener('submit', function (e) 
 // ---------- init ----------
 applyMonthTheme();
 renderTabs();
+renderCaptureDayOptions();
 warmUpApi().then(loadBoard);
 
 if ('serviceWorker' in navigator) {

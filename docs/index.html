@@ -25,9 +25,12 @@
 
   <form class="capture-form" id="capture-form">
     <input type="text" id="capture-input" placeholder="พิมพ์งานแล้วกด Enter…" autocomplete="off">
+    <select id="capture-day" class="capture-day-select" aria-label="เลือกวัน"></select>
   </form>
 
   <main>
+    <div class="overdue-banner" id="overdue-banner" hidden></div>
+    <div class="project-filter" id="project-filter" hidden></div>
     <div class="week-nav" id="week-nav" hidden>
       <button class="icon-btn" id="week-prev" aria-label="สัปดาห์ก่อนหน้า">‹</button>
       <span class="range" id="week-range"></span>
