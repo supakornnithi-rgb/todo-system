@@ -94,10 +94,6 @@ function apiPost(action, payload) {
     });
 }
 
-// ยิง request เปล่าๆ ไว้ "อุ่นเครื่อง" การเชื่อมต่อตอนเปิดแอปครั้งแรก ไม่สนใจผลลัพธ์
-function warmUpApi() {
-  return fetch(API_URL).catch(function () {});
-}
 
 // ---------- state ----------
 var state = {
@@ -302,7 +298,10 @@ function subtaskBoxEl(task) {
 // กลายเป็นลากโดยไม่ตั้งใจ ปุ่มต่างๆ ในการ์ด (เช็ค, ลูกศร, ลบ ฯลฯ) ยังกดได้ปกติเพราะเช็ค e.target ก่อนเริ่มจับเวลา
 var drag = null; // มีการลากได้ทีละ 1 การ์ดเท่านั้นทั้งแอป
 var DRAG_HOLD_MS = 350;
-var DRAG_MOVE_CANCEL_PX = 8;
+// นิ้วคนสั่นตามธรรมชาติเกิน 8px อยู่แล้วตอนกดค้างนิ่งๆ บนจอสัมผัส — ตั้งหลวมพอไม่ให้ยกเลิกการลากไปเอง
+// ก่อนจะเริ่ม (ตั้งไว้แน่นแบบเมาส์ไม่ได้ เพราะ touch-action:none บนการ์ดกันการเลื่อนหน้าจอแทนอยู่แล้ว
+// จึงไม่มีอะไรต้องป้องกันจากการขยับเล็กน้อยตรงนี้)
+var DRAG_MOVE_CANCEL_PX = 24;
 
 function attachDragHandlers(card, task) {
   card.style.touchAction = 'none';
@@ -710,12 +709,28 @@ function closeProjectPicker() {
 }
 
 // ---------- data loading ----------
+// เก็บบอร์ดล่าสุดของแต่ละ workspace ไว้ใน localStorage — ใช้โชว์ทันทีตอนเปิดแอป/สลับ workspace
+// ระหว่างรอข้อมูลสดจริงจาก network (รู้สึกเร็วขึ้นมาก แม้ network เองจะช้าเท่าเดิมก็ตาม)
+function cacheBoard(board) {
+  try { localStorage.setItem('ts_cache_' + board.workspace, JSON.stringify(board)); } catch (e) {}
+}
+
+function tryRenderFromCache(workspace) {
+  try {
+    var raw = localStorage.getItem('ts_cache_' + workspace);
+    if (!raw) return;
+    state.board = JSON.parse(raw);
+    refreshUI();
+  } catch (e) {}
+}
+
 function loadBoard() {
   setLoading(true, 'กำลังโหลดข้อมูล...');
   return apiGet({ action: 'getBoard', workspace: state.workspace, weekStart: state.weekStart })
     .then(function (res) {
       if (!res.ok) throw new Error(res.error || 'โหลดข้อมูลไม่สำเร็จ');
       state.board = res.data;
+      cacheBoard(state.board);
       refreshUI();
     })
     .catch(function (err) {
@@ -733,6 +748,7 @@ document.getElementById('workspace-tabs').addEventListener('click', function (e)
   state.workspace = btn.dataset.workspace;
   state.projectFilter = null; // project คนละชุดกันต่อ workspace เลยรีเซ็ต filter ทุกครั้งที่สลับ
   localStorage.setItem('ts_workspace', state.workspace);
+  tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
   loadBoard();
   renderTabs();
 });
@@ -784,7 +800,8 @@ document.getElementById('someday-form').addEventListener('submit', function (e) 
 applyMonthTheme();
 renderTabs();
 renderCaptureDayOptions();
-warmUpApi().then(loadBoard);
+tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
+loadBoard(); // apiGet มี retry ในตัวอยู่แล้วเผื่อเจอ interstitial ตอนเปิดแอปครั้งแรก ไม่ต้องยิง warm-up แยกอีกรอบ
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
