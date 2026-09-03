@@ -30,6 +30,9 @@ function doPost(e) {
       case 'setDay':
         result = setDay_(body.id, body.day);
         break;
+      case 'deleteTask':
+        result = deleteTask_(body.id);
+        break;
       case 'setProject':
         result = setProject_(body.id, body.project);
         break;

@@ -296,6 +296,98 @@ function subtaskBoxEl(task) {
   return box;
 }
 
+// ---------- ลากการ์ดงานย้ายวัน (มุมมอง Week เท่านั้น) ----------
+// ใช้ Pointer Events (ตัวเดียวรองรับทั้งเมาส์/นิ้ว) แทน HTML5 drag-and-drop เพราะ drag-and-drop
+// มาตรฐานใช้บนมือถือไม่ได้จริง — ต้อง "กดค้าง" ก่อนสักครู่ถึงเริ่มลาก กันการแตะ/เลื่อนหน้าจอปกติ
+// กลายเป็นลากโดยไม่ตั้งใจ ปุ่มต่างๆ ในการ์ด (เช็ค, ลูกศร, ลบ ฯลฯ) ยังกดได้ปกติเพราะเช็ค e.target ก่อนเริ่มจับเวลา
+var drag = null; // มีการลากได้ทีละ 1 การ์ดเท่านั้นทั้งแอป
+var DRAG_HOLD_MS = 350;
+var DRAG_MOVE_CANCEL_PX = 8;
+
+function attachDragHandlers(card, task) {
+  card.style.touchAction = 'none';
+
+  card.addEventListener('pointerdown', function (e) {
+    if (e.target.closest('button, input, form')) return; // ปล่อยให้ปุ่ม/ช่องกรอกทำงานปกติ
+    if (e.button !== undefined && e.button !== 0) return; // เมาส์ใช้ได้แค่คลิกซ้าย
+
+    var startX = e.clientX, startY = e.clientY;
+    var timer = setTimeout(function () {
+      card.removeEventListener('pointermove', cancelIfMoved);
+      card.removeEventListener('pointerup', cancelTimer);
+      startDrag(card, task, startX, startY);
+    }, DRAG_HOLD_MS);
+
+    function cancelIfMoved(ev) {
+      if (Math.abs(ev.clientX - startX) > DRAG_MOVE_CANCEL_PX || Math.abs(ev.clientY - startY) > DRAG_MOVE_CANCEL_PX) {
+        clearTimeout(timer);
+        card.removeEventListener('pointermove', cancelIfMoved);
+      }
+    }
+    function cancelTimer() {
+      clearTimeout(timer);
+      card.removeEventListener('pointermove', cancelIfMoved);
+      card.removeEventListener('pointerup', cancelTimer);
+    }
+    card.addEventListener('pointermove', cancelIfMoved);
+    card.addEventListener('pointerup', cancelTimer, { once: true });
+  });
+}
+
+function positionGhost(ghost, x, y) {
+  ghost.style.left = (x - ghost.offsetWidth / 2) + 'px';
+  ghost.style.top = (y - 24) + 'px';
+}
+
+function startDrag(card, task, x, y) {
+  if (drag) return;
+  card.classList.add('dragging-source');
+
+  var ghost = card.cloneNode(true);
+  ghost.className = 'task-card drag-ghost';
+  ghost.style.width = card.offsetWidth + 'px';
+  document.body.appendChild(ghost);
+  positionGhost(ghost, x, y);
+
+  drag = { task: task, ghost: ghost, sourceCard: card, lastTarget: null };
+  document.addEventListener('pointermove', onDragMove);
+  document.addEventListener('pointerup', onDragEnd);
+  document.addEventListener('pointercancel', onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!drag) return;
+  positionGhost(drag.ghost, e.clientX, e.clientY);
+  drag.ghost.style.display = 'none';
+  var el = document.elementFromPoint(e.clientX, e.clientY);
+  drag.ghost.style.display = '';
+  var section = el && el.closest('.day-section');
+  if (drag.lastTarget && drag.lastTarget !== section) {
+    drag.lastTarget.classList.remove('drop-target');
+  }
+  if (section) section.classList.add('drop-target');
+  drag.lastTarget = section;
+}
+
+function onDragEnd() {
+  if (!drag) return;
+  document.removeEventListener('pointermove', onDragMove);
+  document.removeEventListener('pointerup', onDragEnd);
+  document.removeEventListener('pointercancel', onDragEnd);
+
+  drag.sourceCard.classList.remove('dragging-source');
+  drag.ghost.remove();
+  if (drag.lastTarget) drag.lastTarget.classList.remove('drop-target');
+
+  var targetDate = drag.lastTarget && drag.lastTarget.dataset.date;
+  var task = drag.task;
+  drag = null;
+
+  if (targetDate && targetDate !== task.day) {
+    mutate(apiPost('setDay', { id: task.id, day: targetDate }), { apply: applyTask });
+  }
+}
+
 function taskCardEl(task, opts) {
   var card = document.createElement('div');
   card.className = 'task-card' + (task.done ? ' done' : '');
@@ -372,15 +464,32 @@ function taskCardEl(task, opts) {
     actions.appendChild(toSomeday);
   }
 
+  var del = document.createElement('button');
+  del.className = 'delete-btn';
+  del.textContent = '🗑';
+  del.title = 'ลบงานนี้';
+  del.addEventListener('click', function () {
+    if (!confirm('ลบงาน "' + task.title + '" เลยไหม? กู้คืนไม่ได้')) return;
+    mutate(apiPost('deleteTask', { id: task.id }), { apply: function () { removeTaskLocal(task.id); } });
+  });
+  actions.appendChild(del);
+
   card.appendChild(check);
   card.appendChild(body);
   card.appendChild(actions);
+
+  // ลากย้ายวันได้เฉพาะมุมมอง Week และเฉพาะงานที่ผูกกับวัน (ไม่ใช่ someday — ใช้ปุ่ม ↥ แทน)
+  if (state.view === 'week' && !(opts && opts.somedayItem)) {
+    attachDragHandlers(card, task);
+  }
+
   return card;
 }
 
 function daySectionEl(date, tasks, isToday) {
   var section = document.createElement('div');
   section.className = 'day-section';
+  section.dataset.date = date;
 
   var heading = document.createElement('p');
   heading.className = 'day-heading' + (isToday ? ' is-today' : '');

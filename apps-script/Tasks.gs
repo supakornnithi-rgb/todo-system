@@ -180,6 +180,17 @@ function setDay_(id, day) {
   return cleanTask_(t, getSubtasksForTask_(id));
 }
 
+// ลบ task ถาวร (กู้คืนไม่ได้) พร้อมลบ subtask ของ task นั้นทิ้งด้วย กันข้อมูลกำพร้าค้างในชีต Subtasks
+function deleteTask_(id) {
+  var t = findTaskRow_(id);
+  var subRows = readRows_(SUBTASKS_SHEET).filter(function (s) { return s.taskId === id; });
+  // ลบจากแถวท้ายสุดไล่ขึ้นไปหน้า กันเลขแถวเลื่อนระหว่างลบหลายแถวพร้อมกัน
+  subRows.sort(function (a, b) { return b.__row - a.__row; })
+    .forEach(function (s) { getSheet_(SUBTASKS_SHEET).deleteRow(s.__row); });
+  getSheet_(TASKS_SHEET).deleteRow(t.__row);
+  return { id: id };
+}
+
 function setProject_(id, project) {
   var t = findTaskRow_(id);
   updateRowFields_(TASKS_SHEET, t.__row, { project: project || '' });

@@ -441,6 +441,34 @@ main {
   background: var(--accent-soft);
 }
 
+.delete-btn {
+  font-size: 13px !important;
+}
+
+.delete-btn:active {
+  background: #f8dede !important;
+}
+
+.task-card.dragging-source {
+  opacity: 0.35;
+}
+
+.drag-ghost {
+  position: fixed;
+  z-index: 200;
+  pointer-events: none;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  opacity: 0.96;
+  transform: rotate(-1.5deg);
+}
+
+.day-section.drop-target {
+  background: var(--accent-soft);
+  border-radius: 12px;
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+}
+
 .empty-hint {
   font-size: 13px;
   color: var(--text-soft);
