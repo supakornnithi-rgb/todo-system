@@ -10,6 +10,10 @@ function doGet(e) {
       var data = getBoard_(e.parameter.workspace, e.parameter.weekStart);
       return jsonResponse_({ ok: true, data: data });
     }
+    if (action === 'getProjectHistory') {
+      var history = getProjectHistory_(e.parameter.workspace);
+      return jsonResponse_({ ok: true, data: history });
+    }
     throw new Error('ไม่รู้จัก action: ' + action);
   } catch (err) {
     return jsonResponse_({ ok: false, error: err.message });
@@ -29,6 +33,9 @@ function doPost(e) {
         break;
       case 'setDay':
         result = setDay_(body.id, body.day);
+        break;
+      case 'setTaskOrder':
+        result = setTaskOrder_(body.id, body.position);
         break;
       case 'deleteTask':
         result = deleteTask_(body.id);

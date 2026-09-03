@@ -134,7 +134,10 @@ var state = {
   board: null,
   projectFilter: null,
   expandedTasks: new Set(), // เก็บ id ของ task ที่กางดู subtask อยู่ (UI state ล้วนๆ ไม่ผูกกับ network)
-  workloadExpanded: false
+  workloadExpanded: false,
+  historyExpanded: false,
+  historyLoading: false,
+  historyData: null // {total, stats:[{name,count,pct}]} — โหลดตอนกดกางครั้งแรกของแต่ละ workspace เท่านั้น
 };
 
 // คืนเฉพาะงานที่ตรงกับ project filter ที่เลือกอยู่ (คืนทั้งหมดถ้าไม่ได้เลือก filter)
@@ -209,6 +212,7 @@ function refreshUI() {
   renderProjectFilter();
   renderOverdueBanner();
   renderWorkloadOverview();
+  renderHistoryOverview();
   renderBoard();
   renderSomeday();
 }
@@ -447,6 +451,118 @@ function onDragEnd() {
   }
 }
 
+// ---------- ลากจัดลำดับภายในวันเดียวกัน (handle เฉพาะ ⠿ — แยกจากลากทั้งการ์ดเพื่อย้ายวันด้านบน) ----------
+// ใช้ได้ทั้งมุมมอง Today และ Week เพราะจัดลำดับไม่เกี่ยวกับการย้ายข้ามวัน
+var reorderDrag = null;
+
+function attachReorderHandle(handle, card, task) {
+  handle.style.touchAction = 'none';
+
+  handle.addEventListener('pointerdown', function (e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    var startX = e.clientX, startY = e.clientY;
+    var timer = setTimeout(function () {
+      handle.removeEventListener('pointermove', cancelIfMoved);
+      handle.removeEventListener('pointerup', cancelTimer);
+      startReorderDrag(card, task, startX, startY);
+    }, DRAG_HOLD_MS);
+
+    function cancelIfMoved(ev) {
+      if (Math.abs(ev.clientX - startX) > DRAG_MOVE_CANCEL_PX || Math.abs(ev.clientY - startY) > DRAG_MOVE_CANCEL_PX) {
+        clearTimeout(timer);
+        handle.removeEventListener('pointermove', cancelIfMoved);
+      }
+    }
+    function cancelTimer() {
+      clearTimeout(timer);
+      handle.removeEventListener('pointermove', cancelIfMoved);
+      handle.removeEventListener('pointerup', cancelTimer);
+    }
+    handle.addEventListener('pointermove', cancelIfMoved);
+    handle.addEventListener('pointerup', cancelTimer, { once: true });
+  });
+}
+
+function startReorderDrag(card, task, x, y) {
+  if (reorderDrag || drag) return;
+  card.classList.add('dragging-source');
+
+  var ghost = card.cloneNode(true);
+  ghost.className = 'task-card drag-ghost';
+  ghost.style.width = card.offsetWidth + 'px';
+  document.body.appendChild(ghost);
+  positionGhost(ghost, x, y);
+
+  reorderDrag = {
+    task: task,
+    ghost: ghost,
+    sourceCard: card,
+    sourceSection: card.closest('.day-section'),
+    lastTarget: null,
+    insertAfter: false
+  };
+  document.addEventListener('pointermove', onReorderMove);
+  document.addEventListener('pointerup', onReorderEnd);
+  document.addEventListener('pointercancel', onReorderEnd);
+}
+
+function onReorderMove(e) {
+  if (!reorderDrag) return;
+  positionGhost(reorderDrag.ghost, e.clientX, e.clientY);
+  reorderDrag.ghost.style.display = 'none';
+  var el = document.elementFromPoint(e.clientX, e.clientY);
+  reorderDrag.ghost.style.display = '';
+
+  if (reorderDrag.lastTarget) reorderDrag.lastTarget.classList.remove('reorder-before', 'reorder-after');
+
+  var overCard = el && el.closest('.task-card');
+  if (overCard && overCard !== reorderDrag.sourceCard && overCard.closest('.day-section') === reorderDrag.sourceSection) {
+    var rect = overCard.getBoundingClientRect();
+    var after = e.clientY > rect.top + rect.height / 2;
+    overCard.classList.add(after ? 'reorder-after' : 'reorder-before');
+    reorderDrag.lastTarget = overCard;
+    reorderDrag.insertAfter = after;
+  } else {
+    reorderDrag.lastTarget = null;
+  }
+}
+
+function applyReorder(result) {
+  var day = state.board.days.find(function (d) { return d.date === result.day; });
+  if (day) day.tasks = result.tasks;
+}
+
+function onReorderEnd() {
+  if (!reorderDrag) return;
+  document.removeEventListener('pointermove', onReorderMove);
+  document.removeEventListener('pointerup', onReorderEnd);
+  document.removeEventListener('pointercancel', onReorderEnd);
+
+  var sourceCard = reorderDrag.sourceCard;
+  var sourceSection = reorderDrag.sourceSection;
+  var targetCard = reorderDrag.lastTarget;
+  var insertAfter = reorderDrag.insertAfter;
+  var task = reorderDrag.task;
+  var ghost = reorderDrag.ghost;
+  reorderDrag = null;
+
+  sourceCard.classList.remove('dragging-source');
+  ghost.remove();
+  if (targetCard) targetCard.classList.remove('reorder-before', 'reorder-after');
+  if (!targetCard) return; // ปล่อยนอกการ์ด/นอกวันเดิม ถือว่ายกเลิก ไม่มีอะไรเปลี่ยน
+
+  // หาตำแหน่งจากลำดับการ์ดจริงใน DOM ตอนนี้ (ไม่นับการ์ดต้นทางที่กำลังลากอยู่ — ตรงกับที่ backend คำนวณ)
+  var list = sourceSection.querySelector('.task-list');
+  var domCards = Array.from(list.children).filter(function (c) {
+    return c.classList.contains('task-card') && c !== sourceCard;
+  });
+  var targetIdx = domCards.indexOf(targetCard);
+  if (targetIdx === -1) return;
+  var position = targetIdx + 1 + (insertAfter ? 1 : 0);
+
+  mutate(apiPost('setTaskOrder', { id: task.id, position: position }), { apply: applyReorder });
+}
+
 function taskCardEl(task, opts) {
   var card = document.createElement('div');
   card.className = 'task-card' + (task.done ? ' done' : '');
@@ -540,17 +656,21 @@ function taskCardEl(task, opts) {
   });
   actions.appendChild(del);
 
-  if (opts && opts.number) {
-    var numBadge = document.createElement('span');
-    numBadge.className = 'task-number';
-    numBadge.textContent = opts.number;
-    card.appendChild(numBadge);
+  if (!(opts && opts.somedayItem)) {
+    var handle = document.createElement('button');
+    handle.className = 'drag-handle';
+    handle.textContent = '⠿';
+    handle.setAttribute('aria-label', 'กดค้างเพื่อจัดลำดับในวันนี้');
+    handle.title = 'กดค้างแล้วลากเพื่อจัดลำดับ';
+    card.appendChild(handle);
+    attachReorderHandle(handle, card, task);
   }
   card.appendChild(check);
   card.appendChild(body);
   card.appendChild(actions);
 
-  // ลากย้ายวันได้เฉพาะมุมมอง Week และเฉพาะงานที่ผูกกับวัน (ไม่ใช่ someday — ใช้ปุ่ม ↥ แทน)
+  // ลากทั้งการ์ด (แตะที่อื่นนอกปุ่ม/handle) ย้ายวันได้เฉพาะมุมมอง Week และเฉพาะงานที่ผูกกับวัน
+  // (ไม่ใช่ someday — ใช้ปุ่ม ↥ แทน) — แยกจาก handle ด้านบนซึ่งใช้จัดลำดับภายในวันเดียวกันเท่านั้น
   if (state.view === 'week' && !(opts && opts.somedayItem)) {
     attachDragHandlers(card, task);
   }
@@ -581,7 +701,7 @@ function daySectionEl(date, tasks, isToday) {
     hint.textContent = 'ยังไม่มีงาน';
     list.appendChild(hint);
   } else {
-    tasks.forEach(function (t, idx) { list.appendChild(taskCardEl(t, { number: idx + 1 })); });
+    tasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
   }
   section.appendChild(list);
   return section;
@@ -749,6 +869,101 @@ function renderWorkloadOverview() {
   el.appendChild(list);
 }
 
+// ---------- ประวัติงานเสร็จแล้ว (ทุกสัปดาห์ย้อนหลัง ไม่ใช่แค่สัปดาห์ปัจจุบัน) ----------
+// โหลดแบบ lazy ตอนกดกางครั้งแรกของแต่ละ workspace เท่านั้น (คนละ endpoint จาก getBoard เพราะต้อง
+// อ่านทั้งชีต ไม่ได้อ่านแค่สัปดาห์เดียว) แล้ว cache ไว้ใน state.historyData จนกว่าจะสลับ workspace
+function renderHistoryOverview() {
+  var el = document.getElementById('history-section');
+  el.innerHTML = '';
+
+  var toggle = document.createElement('button');
+  toggle.className = 'workload-toggle';
+  toggle.textContent = (state.historyExpanded ? '▾ ' : '▸ ') + 'ประวัติงานเสร็จแล้ว' +
+    (state.historyData ? ' (' + state.historyData.total + ' งาน)' : '');
+  toggle.addEventListener('click', function () {
+    state.historyExpanded = !state.historyExpanded;
+    if (state.historyExpanded && !state.historyData) {
+      loadHistory();
+    } else {
+      renderHistoryOverview();
+    }
+  });
+  el.appendChild(toggle);
+
+  if (!state.historyExpanded) return;
+
+  if (state.historyLoading) {
+    var loadingHint = document.createElement('p');
+    loadingHint.className = 'empty-hint';
+    loadingHint.textContent = 'กำลังโหลด...';
+    el.appendChild(loadingHint);
+    return;
+  }
+
+  if (!state.historyData || state.historyData.total === 0) {
+    var hint = document.createElement('p');
+    hint.className = 'empty-hint';
+    hint.textContent = 'ยังไม่มีงานที่เสร็จเลย';
+    el.appendChild(hint);
+    return;
+  }
+
+  var bar = document.createElement('div');
+  bar.className = 'workload-bar';
+  state.historyData.stats.forEach(function (s) {
+    var seg = document.createElement('span');
+    seg.style.width = s.pct + '%';
+    seg.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
+    bar.appendChild(seg);
+  });
+  el.appendChild(bar);
+
+  var list = document.createElement('div');
+  list.className = 'workload-list';
+  state.historyData.stats.forEach(function (s) {
+    var row = document.createElement('div');
+    row.className = 'workload-row';
+
+    var dot = document.createElement('span');
+    dot.className = 'workload-dot';
+    dot.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
+
+    var label = document.createElement('span');
+    label.className = 'workload-label';
+    label.textContent = s.name;
+
+    var value = document.createElement('span');
+    value.className = 'workload-value';
+    value.textContent = s.count + ' งาน · ' + s.pct + '%';
+
+    row.appendChild(dot);
+    row.appendChild(label);
+    row.appendChild(value);
+    list.appendChild(row);
+  });
+  el.appendChild(list);
+}
+
+function loadHistory() {
+  state.historyLoading = true;
+  renderHistoryOverview();
+  setLoading(true, 'กำลังโหลดประวัติ...');
+  apiGet({ action: 'getProjectHistory', workspace: state.workspace })
+    .then(function (res) {
+      if (!res.ok) throw new Error(res.error || 'โหลดประวัติไม่สำเร็จ');
+      state.historyData = res.data;
+    })
+    .catch(function (err) {
+      showToast('ผิดพลาด: ' + err.message);
+      state.historyExpanded = false;
+    })
+    .then(function () {
+      state.historyLoading = false;
+      setLoading(false);
+      renderHistoryOverview();
+    });
+}
+
 // ---------- overdue banner ----------
 function renderOverdueBanner() {
   var el = document.getElementById('overdue-banner');
@@ -913,6 +1128,8 @@ document.getElementById('workspace-tabs').addEventListener('click', function (e)
   if (!btn) return;
   state.workspace = btn.dataset.workspace;
   state.projectFilter = null; // project คนละชุดกันต่อ workspace เลยรีเซ็ต filter ทุกครั้งที่สลับ
+  state.historyData = null; // ประวัติเป็นของแต่ละ workspace แยกกัน ต้องโหลดใหม่ตอนสลับ
+  state.historyExpanded = false;
   localStorage.setItem('ts_workspace', state.workspace);
   tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
   loadBoard();

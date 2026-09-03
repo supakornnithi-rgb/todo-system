@@ -25,3 +25,36 @@ function setupSubtasksSheet() {
   sheet.getRange(1, 1, 1, header.length).setValues([header]);
   Logger.log('สร้างแท็บ "' + SUBTASKS_SHEET + '" พร้อมหัวตารางเรียบร้อยแล้ว');
 }
+
+/**
+ * รันครั้งเดียวเพื่อเพิ่มคอลัมน์ "order" ในแท็บ Tasks (ถ้ายังไม่มี) แล้วเติมเลขลำดับให้งานเก่าทุกงาน
+ * ที่มีอยู่แล้ว (เรียงตาม createdAt เดิมภายในแต่ละ workspace+day) — ต้องรันก่อนใช้ฟีเจอร์ลากจัดลำดับได้
+ * งาน someday ไม่ต้องมี order (เว้นว่างไว้ตามปกติ)
+ */
+function migrateTaskOrder() {
+  var sheet = getSheet_(TASKS_SHEET);
+  var header = getHeader_(sheet);
+  if (header.indexOf('order') === -1) {
+    sheet.getRange(1, header.length + 1).setValue('order');
+  }
+
+  var groups = {};
+  readRows_(TASKS_SHEET).map(normalizeTaskRow_).forEach(function (t) {
+    if (t.day === 'someday') return;
+    var key = t.workspace + '|' + t.day;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(t);
+  });
+
+  var updated = 0;
+  Object.keys(groups).forEach(function (key) {
+    groups[key]
+      .sort(function (a, b) { return a.createdAt < b.createdAt ? -1 : 1; })
+      .forEach(function (t, i) {
+        updateRowFields_(TASKS_SHEET, t.__row, { order: i + 1 });
+        updated++;
+      });
+  });
+
+  Logger.log('เติมค่า order ให้งานเก่าเรียบร้อย: ' + updated + ' งาน');
+}

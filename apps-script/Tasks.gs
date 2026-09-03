@@ -31,6 +31,7 @@ function cleanTask_(t, subtasks) {
     done: t.done === true || t.done === 'TRUE',
     createdAt: t.createdAt,
     completedAt: t.completedAt || '',
+    order: t.order || 0,
     subtasks: subtasks || []
   };
 }
@@ -115,7 +116,8 @@ function getBoard_(workspace, weekStartIso) {
     });
 
   function byCreatedAt(a, b) { return a.createdAt < b.createdAt ? -1 : 1; }
-  Object.keys(byDay).forEach(function (d) { byDay[d].sort(byCreatedAt); });
+  function byOrder(a, b) { return (a.order || 0) - (b.order || 0) || byCreatedAt(a, b); }
+  Object.keys(byDay).forEach(function (d) { byDay[d].sort(byOrder); });
   someday.sort(byCreatedAt);
 
   var projects = readRows_(PROJECTS_SHEET)
@@ -132,6 +134,35 @@ function getBoard_(workspace, weekStartIso) {
   };
 }
 
+// จำนวนงาน (ไม่รวม someday) ของ workspace+day นั้น — ใช้คำนวณว่างานใหม่/งานที่ย้ายมาควรได้ order
+// เท่าไหร่ (ต่อท้ายลำดับเสมอ ผู้ใช้ค่อยลากจัดตำแหน่งเองทีหลังได้ผ่าน setTaskOrder_)
+function countTasksInDay_(workspace, day) {
+  return readRows_(TASKS_SHEET).filter(function (t) { return t.workspace === workspace && t.day === day; }).length;
+}
+
+/**
+ * ประวัติงานที่เสร็จแล้วทั้งหมดของ workspace (นับทุกสัปดาห์ย้อนหลัง ไม่จำกัดแค่สัปดาห์ปัจจุบัน
+ * เพราะงานเสร็จแล้วจะไม่ถูก carry-over ไปไหน ค้างอยู่ที่วันเดิมตลอด) จัดกลุ่มนับจำนวน+% ต่อ project
+ */
+function getProjectHistory_(workspace) {
+  assertWorkspace_(workspace);
+  var done = readRows_(TASKS_SHEET)
+    .filter(function (t) { return t.workspace === workspace && (t.done === true || t.done === 'TRUE'); });
+
+  var counts = {};
+  done.forEach(function (t) {
+    var key = t.project || '(ไม่มี project)';
+    counts[key] = (counts[key] || 0) + 1;
+  });
+
+  var total = done.length;
+  var stats = Object.keys(counts)
+    .map(function (name) { return { name: name, count: counts[name], pct: total ? Math.round(counts[name] / total * 100) : 0 }; })
+    .sort(function (a, b) { return b.count - a.count; });
+
+  return { total: total, stats: stats };
+}
+
 /**
  * เพิ่มงานใหม่ — day ไม่ใส่ = วันนี้, ใส่ "someday" = ไปช่อง Someday/Note, project ไม่ใส่ก็ได้
  */
@@ -140,6 +171,7 @@ function addTask_(params) {
   if (!params.title) throw new Error('ต้องระบุ title');
   var day = params.day || todayIso_();
   var weekStart = (day === 'someday') ? '' : mondayOf_(day);
+  var order = (day === 'someday') ? '' : (countTasksInDay_(params.workspace, day) + 1);
 
   var task = {
     id: newTaskId_(),
@@ -150,7 +182,8 @@ function addTask_(params) {
     weekStart: weekStart,
     done: false,
     createdAt: new Date().toISOString(),
-    completedAt: ''
+    completedAt: '',
+    order: order
   };
   appendRow_(TASKS_SHEET, task);
   return cleanTask_(task, []);
@@ -174,10 +207,44 @@ function setDay_(id, day) {
   if (!day) throw new Error('ต้องระบุ day');
   var t = findTaskRow_(id);
   var weekStart = (day === 'someday') ? '' : mondayOf_(day);
-  updateRowFields_(TASKS_SHEET, t.__row, { day: day, weekStart: weekStart });
+  // ย้ายวันแล้วต่อท้ายลำดับของวันใหม่เสมอ (นับก่อนอัปเดตแถวนี้ เพราะงานนี้ยังนับเป็นของวันเก่าอยู่ ณ จุดนี้)
+  var order = (day === 'someday') ? '' : (countTasksInDay_(t.workspace, day) + 1);
+  updateRowFields_(TASKS_SHEET, t.__row, { day: day, weekStart: weekStart, order: order });
   t.day = day;
   t.weekStart = weekStart;
+  t.order = order;
   return cleanTask_(t, getSubtasksForTask_(id));
+}
+
+/**
+ * จัดลำดับงานใหม่ภายในวันเดียวกัน (ลากมาวางตำแหน่งใหม่) — position คือตำแหน่งที่ต้องการ (1-indexed)
+ * นับรวมงานนี้เข้าไปด้วยหลังจัดแล้ว เช่น position=1 คืออยากให้ขึ้นบนสุดของวันนั้น
+ * เรียงลำดับใหม่ทั้งวันให้เป็นเลขต่อเนื่อง 1..N เสมอ (ไม่เก็บเป็นเลขทศนิยม/ช่องว่าง เพื่อความง่าย)
+ */
+function setTaskOrder_(id, position) {
+  var moved = findTaskRow_(id);
+  if (moved.day === 'someday') throw new Error('งานใน someday ไม่มีลำดับให้จัด');
+
+  var siblings = readRows_(TASKS_SHEET)
+    .map(normalizeTaskRow_)
+    .filter(function (t) { return t.workspace === moved.workspace && t.day === moved.day && t.id !== id; })
+    .sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
+
+  var idx = Math.max(0, Math.min(Math.round(position) - 1, siblings.length));
+  siblings.splice(idx, 0, moved);
+
+  siblings.forEach(function (t, i) {
+    var newOrder = i + 1;
+    if (t.order !== newOrder) {
+      updateRowFields_(TASKS_SHEET, t.__row, { order: newOrder });
+      t.order = newOrder;
+    }
+  });
+
+  return {
+    day: moved.day,
+    tasks: siblings.map(function (t) { return cleanTask_(t, getSubtasksForTask_(t.id)); })
+  };
 }
 
 // ลบ task ถาวร (กู้คืนไม่ได้) พร้อมลบ subtask ของ task นั้นทิ้งด้วย กันข้อมูลกำพร้าค้างในชีต Subtasks
