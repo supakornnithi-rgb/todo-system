@@ -36,6 +36,20 @@ function colorForProject(name) {
   return PROJECT_COLORS[hashString(name) % PROJECT_COLORS.length];
 }
 
+// workspace ที่ทำงานแค่ จันทร์-ศุกร์ (ไม่มีวันเสาร์-อาทิตย์ในระบบเลย) — งานที่เลยวันศุกร์ยังไม่เสร็จ
+// จะถูก carry-over ไปวันจันทร์ถัดไปเองอยู่แล้วโดย trigger รายสัปดาห์ที่มีอยู่เดิม (เช็คแค่ weekStart
+// เก่ากว่าสัปดาห์นี้ ไม่สนว่าอยู่วันไหนในสัปดาห์นั้น) เลยไม่ต้องแก้ backend เพิ่ม แค่ฝั่งแสดงผล/นำทาง
+var WEEKDAYS_ONLY_WORKSPACES = ['Office'];
+
+function isWeekdaysOnly(workspace) {
+  return WEEKDAYS_ONLY_WORKSPACES.indexOf(workspace) !== -1;
+}
+
+function isWeekend(dateIso) {
+  var day = parseIso(dateIso).getDay();
+  return day === 0 || day === 6;
+}
+
 // ---------- date utils (ทำงานบนวันที่ปฏิทินล้วนๆ ไม่ยุ่งกับ timezone ของ string parsing) ----------
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
@@ -56,6 +70,16 @@ function addDaysIso(iso, n) {
   var d = parseIso(iso);
   d.setDate(d.getDate() + n);
   return toIso(d);
+}
+
+// เลื่อนวัน ±1 ปกติ แต่ถ้า workspace ทำงานแค่ จ-ศ ให้ข้ามเสาร์-อาทิตย์ไปเลย (ศุกร์ -> จันทร์ถัดไป,
+// จันทร์ -> ศุกร์ก่อนหน้า)
+function addBusinessDaysIso(workspace, iso, direction) {
+  var date = addDaysIso(iso, direction);
+  if (isWeekdaysOnly(workspace)) {
+    while (isWeekend(date)) date = addDaysIso(date, direction);
+  }
+  return date;
 }
 
 function mondayOf(iso) {
@@ -124,7 +148,216 @@ function apiPost(action, payload) {
       throw new Error('เชื่อมต่อไม่สำเร็จ ลองกดใหม่อีกครั้ง');
     });
 }
+// ---------- write queue: optimistic + debounce + merge + retry with backoff + persistence ----------
+// หลักการ: UI อัปเดตทันทีเสมอ (optimistic) โดยไม่รอ network เลย ส่วนการยิงจริงไป Apps Script จะถูก
+// "รวบ" ต่อ key (เช่น task:<id>) รอเงียบ 600ms ก่อนค่อยส่ง ถ้ามีการแก้ field เดิมซ้ำในช่วงรอ จะ merge
+// เป็น POST เดียว ไม่ยิงซ้ำทุกครั้งที่กด — ลด request จริงลงเยอะโดยผู้ใช้ไม่รู้สึกหน่วงเลยเพราะจอ
+// เปลี่ยนทันทีอยู่แล้ว ณ ตอนกด
+var QUEUE_STORAGE_KEY = 'ts_write_queue';
+var QUEUE_DEBOUNCE_MS = 600;
+var QUEUE_RETRY_BASE_MS = 2000;
+var QUEUE_RETRY_MAX_MS = 15000;
 
+var queueStore = {};  // key -> { opId, data } ที่ยังไม่ได้ส่ง (คงอยู่ข้าม reload ผ่าน localStorage)
+var queueMeta = {};   // key -> { timer, busy, attempts } — สถานะรันไทม์ล้วนๆ ไม่ persist
+var inFlightData = {}; // key -> data ที่กำลังส่งอยู่ตอนนี้ (ใช้ตรวจตอน poll ว่าอย่าทับด้วยของ server เก่า)
+
+function generateOpId(key) {
+  return key + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+function loadQueueFromStorage() {
+  try {
+    var raw = localStorage.getItem(QUEUE_STORAGE_KEY);
+    queueStore = raw ? (JSON.parse(raw) || {}) : {};
+  } catch (e) { queueStore = {}; }
+}
+
+function persistQueueToStorage() {
+  try { localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queueStore)); } catch (e) {}
+}
+
+function queueMetaFor(key) {
+  return queueMeta[key] || (queueMeta[key] = { timer: null, busy: false, attempts: 0 });
+}
+
+// key: 'task:<id>' สำหรับแก้ field ของ task เดิม (merge กันได้), 'reorder:<id>' สำหรับจัดลำดับ,
+// 'op:<unique>' สำหรับ action แบบครั้งเดียวไม่ merge (addTask/deleteTask/addSubtask/...)
+//
+// entry ที่ค้างอยู่ (ยังไม่ได้ "confirm" ว่า backend ทำสำเร็จ) จะอยู่ใน queueStore ต่อไปตลอด — ไม่ใช่
+// แค่ตอนรอ debounce แต่รวมถึงตอนกำลังส่ง (in-flight) ด้วย เพื่อให้ persist ลง localStorage ครบ ถ้าปิด
+// หน้าไปพอดีตอนกำลังส่งอยู่ เปิดใหม่แล้ว flushAll() จะ resume ส่งต่อได้ (ใช้ opId เดิมเป๊ะถ้าไม่มีอะไร
+// เปลี่ยนระหว่างนั้น เลยชนกับ idempotency cache ฝั่ง backend ได้ถูกต้องถ้ารอบก่อนจริงๆ สำเร็จไปแล้ว
+// แค่ response หลุดหาย) ตัวที่บอกว่า "กำลังส่งอยู่ตอนนี้ในแท็บนี้" คือ queueMeta[key].busy ซึ่งเป็น
+// runtime-only ไม่ persist — พอ reload บอกว่า busy=false เสมอ ทำให้ resume ส่งใหม่ได้จริง
+function queue(key, fields) {
+  var entry = queueStore[key];
+  if (!entry) {
+    entry = { opId: generateOpId(key), data: {} };
+    queueStore[key] = entry;
+  } else {
+    entry.opId = generateOpId(key); // เนื้อหาเปลี่ยนจากที่เคยส่ง (ถ้าเคยส่ง) แล้ว ใช้ opId ใหม่เสมอ
+  }
+  Object.assign(entry.data, fields);
+  persistQueueToStorage();
+  updateQueueStatus();
+  scheduleFlush(key);
+}
+
+function scheduleFlush(key) {
+  var meta = queueMetaFor(key);
+  if (meta.busy) return; // มีคำขอค้างอยู่แล้ว จะ flush ต่อเองตอนมันจบถ้ายังมี pending (ดูใน flush())
+  clearTimeout(meta.timer);
+  meta.timer = setTimeout(function () { flush(key); }, QUEUE_DEBOUNCE_MS);
+}
+
+function flush(key) {
+  var meta = queueMetaFor(key);
+  clearTimeout(meta.timer);
+  meta.timer = null;
+  if (meta.busy) return;
+  var entry = queueStore[key];
+  if (!entry) return;
+
+  meta.busy = true;
+  var dispatchedOpId = entry.opId; // ไว้เช็คตอนจบว่ามี intent ใหม่มาทับระหว่างที่ส่งอยู่หรือเปล่า
+  inFlightData[key] = entry.data;
+  updateQueueStatus();
+
+  sendQueuedEntry(key, entry)
+    .then(function (res) {
+      meta.attempts = 0;
+      meta.busy = false;
+      delete inFlightData[key];
+      // ลบออกจากคิว persisted เฉพาะตอนไม่มีใครมาแก้ทับระหว่างที่ส่งอยู่ (opId ยังตรงกับตอนเริ่มส่ง)
+      // ถ้ามี intent ใหม่เข้ามาระหว่างนั้น entry ปัจจุบันจะมี opId ใหม่แล้ว ต้องเก็บไว้ส่งต่อ ไม่ลบทิ้ง
+      if (queueStore[key] && queueStore[key].opId === dispatchedOpId) {
+        delete queueStore[key];
+      }
+      persistQueueToStorage();
+      applyQueueResult(key, entry, res);
+      if (queueStore[key]) flush(key); // มี intent ใหม่ค้างอยู่ ส่งต่อทันที ไม่ต้องรอ debounce ใหม่
+      else updateQueueStatus();
+    })
+    .catch(function () {
+      // ส่งไม่สำเร็จ (เชื่อมต่อพัง ไม่ใช่ backend ปฏิเสธ) — entry ยังอยู่ใน queueStore เหมือนเดิม
+      // (ไม่เคยลบออกตั้งแต่แรก) แค่ปลด busy แล้วตั้ง retry แบบถอยหลังเอ็กซ์โพเนนเชียล 2s,4s,8s,...
+      // สูงสุด 15s — ถ้ามี queue() ใหม่เข้ามาระหว่างนี้ ก็ merge เข้า entry เดิมไปแล้วโดยอัตโนมัติ
+      delete inFlightData[key];
+      meta.busy = false;
+      meta.attempts++;
+      var delay = Math.min(QUEUE_RETRY_BASE_MS * Math.pow(2, meta.attempts - 1), QUEUE_RETRY_MAX_MS);
+      meta.timer = setTimeout(function () { flush(key); }, delay);
+      updateQueueStatus();
+    });
+}
+
+function flushAll() {
+  Object.keys(queueStore).forEach(function (key) { flush(key); });
+}
+
+function sendQueuedEntry(key, entry) {
+  if (key.indexOf('task:') === 0) {
+    return apiPost('updateTask', { id: key.slice(5), fields: entry.data, opId: entry.opId });
+  }
+  if (key.indexOf('reorder:') === 0) {
+    return apiPost('setTaskOrder', { id: key.slice(8), position: entry.data.position, opId: entry.opId });
+  }
+  // op:<unique> — entry.data = { action, params }
+  return apiPost(entry.data.action, Object.assign({ opId: entry.opId }, entry.data.params));
+}
+
+// เอาผลลัพธ์ที่ backend ยืนยันมาสะท้อนกลับ state.board ให้ตรงของจริง (แทนที่ค่า optimistic ชั่วคราว
+// เช่น temp id ของงานที่เพิ่งเพิ่ม ด้วยของจริงจาก server)
+function applyQueueResult(key, entry, res) {
+  if (!res.ok) {
+    showToast('ผิดพลาด: ' + (res.error || 'ไม่ทราบสาเหตุ'));
+    loadBoard(); // backend ปฏิเสธจริง (ไม่ใช่แค่เน็ตพัง) โหลดใหม่ให้เห็นสถานะจริงเสมอ
+    return;
+  }
+  if (key.indexOf('task:') === 0) {
+    applyTask(res.result);
+  } else if (key.indexOf('reorder:') === 0) {
+    applyReorder(res.result);
+  } else {
+    var action = entry.data.action, params = entry.data.params;
+    if (action === 'addTask') {
+      removeTaskLocal(params.tempId);
+      insertTaskLocal(res.result);
+    } else if (action === 'addSubtask' || action === 'toggleSubtaskDone') {
+      applyTask(res.result.task);
+    } else if (action === 'addProject') {
+      if (state.board) state.board.projects = res.result;
+    } else if (action === 'addDream') {
+      if (state.dreamsData) {
+        var di = state.dreamsData.findIndex(function (d) { return d.id === params.tempId; });
+        if (di !== -1) state.dreamsData[di] = res.result;
+      }
+      if (document.getElementById('dreams-panel')) renderDreamsPanel();
+    } else if (action === 'toggleDreamDone') {
+      if (state.dreamsData) {
+        var dj = state.dreamsData.findIndex(function (d) { return d.id === res.result.id; });
+        if (dj !== -1) state.dreamsData[dj] = res.result;
+      }
+      if (document.getElementById('dreams-panel')) renderDreamsPanel();
+    }
+    // deleteTask: ลบออกจากจอไปแล้วตอน optimistic ไม่ต้องทำอะไรเพิ่ม
+  }
+  refreshUI();
+}
+
+// แก้ field ของ task เดียว — อัปเดตจอทันที (optimistic) แล้วค่อยเข้าคิวส่งจริงแบบ debounce+merge
+function updateTaskField(task, fields) {
+  upsertTaskLocal(Object.assign({}, task, fields));
+  refreshUI();
+  queue('task:' + task.id, fields);
+}
+
+// จัดลำดับใน state.board ทันที (optimistic) ก่อนเข้าคิวส่งจริง — ลอกวิธีคำนวณตำแหน่งแบบเดียวกับ backend
+function reorderTaskLocal(taskId, day, position) {
+  if (!state.board) return;
+  var dayObj = state.board.days.find(function (d) { return d.date === day; });
+  if (!dayObj) return;
+  var idx = dayObj.tasks.findIndex(function (t) { return t.id === taskId; });
+  if (idx === -1) return;
+  var moved = dayObj.tasks.splice(idx, 1)[0];
+  var insertAt = Math.max(0, Math.min(Math.round(position) - 1, dayObj.tasks.length));
+  dayObj.tasks.splice(insertAt, 0, moved);
+}
+
+function queueOp(key, action, params) {
+  queue(key, { action: action, params: params });
+}
+
+function newOpKey(prefix) {
+  return 'op:' + prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+// ---------- แถบสถานะคิว "saving n…" / "all saved ✓" ----------
+var queueStatusHideTimer = null;
+function pendingQueueCount() {
+  // entry ที่ยังอยู่ใน queueStore นับรวมทั้งที่รอ debounce และที่กำลังส่งอยู่ (busy) แล้วอยู่แล้ว
+  // เพราะตอนนี้ flush() ไม่ลบ entry ออกจนกว่าจะ confirm สำเร็จจริง
+  return Object.keys(queueStore).length;
+}
+
+function updateQueueStatus() {
+  var el = document.getElementById('queue-status');
+  var n = pendingQueueCount();
+  clearTimeout(queueStatusHideTimer);
+  if (n > 0) {
+    el.textContent = 'saving ' + n + '…';
+    el.hidden = false;
+    el.classList.remove('saved');
+  } else {
+    el.textContent = 'all saved ✓';
+    el.classList.add('saved');
+    el.hidden = false;
+    queueStatusHideTimer = setTimeout(function () { el.hidden = true; }, 1500);
+  }
+}
+
+window.addEventListener('online', flushAll);
 
 // ---------- state ----------
 var state = {
@@ -137,7 +370,9 @@ var state = {
   workloadExpanded: false,
   historyExpanded: false,
   historyLoading: false,
-  historyData: null // {total, stats:[{name,count,pct}]} — โหลดตอนกดกางครั้งแรกของแต่ละ workspace เท่านั้น
+  historyData: null, // {total, stats:[{name,count,pct}]} — โหลดตอนกดกางครั้งแรกของแต่ละ workspace เท่านั้น
+  dreamsData: null, // ลิสต์ TRUE DREAM — แยกอิสระจาก workspace/task ทั้งหมด โหลดครั้งแรกตอนกดเปิดปุ่ม
+  dreamsLoading: false
 };
 
 // คืนเฉพาะงานที่ตรงกับ project filter ที่เลือกอยู่ (คืนทั้งหมดถ้าไม่ได้เลือก filter)
@@ -160,7 +395,10 @@ function removeTaskLocal(id) {
 }
 
 function insertTaskLocal(task) {
-  if (!state.board) return;
+  // เช็ค workspace ด้วยเสมอ — คิวเขียนทำงานเบื้องหลังต่อได้แม้ผู้ใช้จะสลับ workspace ไปแล้วก่อน
+  // ที่ addTask/setDay ค้างอยู่จะยืนยันกลับมา ถ้าไม่เช็คจะเผลอแทรก task ผิด workspace เข้าบอร์ดที่
+  // กำลังเปิดดูอยู่ได้ (บอร์ดจะดึงกลับมาถูกต้องเองตอน poll/loadBoard ของ workspace นั้นครั้งถัดไป)
+  if (!state.board || task.workspace !== state.board.workspace) return;
   if (task.day === 'someday') {
     state.board.someday.push(task);
     state.board.someday.sort(byCreatedAt);
@@ -206,7 +444,7 @@ function setLoading(active, label) {
 }
 
 // วาดหน้าจอใหม่ทั้งหมดจาก state.board ปัจจุบัน — เรียกได้ทั้งหลัง loadBoard() ยิง network จริง
-// และหลัง mutate() แก้ state.board ในเครื่องตรงๆ (optimistic update) โดยไม่ต้องยิง network ซ้ำ
+// และหลังแก้ state.board ในเครื่องตรงๆ แบบ optimistic (ก่อนคิวจะยิงจริงไป backend ด้วยซ้ำ)
 function refreshUI() {
   renderTabs();
   renderProjectFilter();
@@ -215,37 +453,6 @@ function refreshUI() {
   renderHistoryOverview();
   renderBoard();
   renderSomeday();
-}
-
-/**
- * ทุก action ที่แก้ข้อมูล (POST) เรียกผ่านตัวนี้ให้หมด
- * ถ้าสำเร็จและมี opts.apply (แก้ state.board ในเครื่องได้เอง เช่น toggleDone) จะอัปเดตหน้าจอจาก
- * ผลลัพธ์ที่ได้กลับมาทันที ไม่ยิง network ซ้ำรอบสอง — เร็วขึ้นประมาณครึ่งหนึ่งเทียบของเดิมที่ reload ทุกครั้ง
- * ถ้าไม่มี opts.apply (เช่น compound action) หรือเกิด error/เชื่อมต่อพัง จะ loadBoard() ใหม่เสมอ
- * เพื่อให้เห็นสถานะจริงบนชีต (เชื่อมต่อพังไม่ได้แปลว่างานไม่ถูกบันทึกจริง — Apps Script อาจเขียนสำเร็จ
- * ไปแล้วแค่ตอบกลับมาไม่ถึง)
- */
-function mutate(promise, opts) {
-  opts = opts || {};
-  setLoading(true, opts.loadingLabel || 'กำลังบันทึก...');
-  return promise.then(function (res) {
-    if (!res.ok) {
-      showToast('ผิดพลาด: ' + (res.error || 'ไม่ทราบสาเหตุ'));
-      return loadBoard();
-    }
-    if (opts.successToast) showToast(opts.successToast);
-    if (opts.apply) {
-      opts.apply(res.result);
-      refreshUI();
-    } else {
-      return loadBoard();
-    }
-  }).catch(function (err) {
-    showToast(err.message);
-    return loadBoard();
-  }).then(function () {
-    setLoading(false);
-  });
 }
 
 // ---------- toast ----------
@@ -295,7 +502,7 @@ function startTitleEdit(titleEl, task) {
       refreshUI(); // ไม่มีอะไรเปลี่ยนหรือลบจนว่าง กลับไป render ปกติเฉยๆ
       return;
     }
-    mutate(apiPost('setTitle', { id: task.id, title: newTitle }), { apply: applyTask });
+    updateTaskField(task, { title: newTitle });
   }
 
   input.addEventListener('blur', commit);
@@ -324,9 +531,12 @@ function subtaskBoxEl(task) {
     sCheck.className = 'subtask-check';
     sCheck.textContent = s.done ? '✓' : '';
     sCheck.addEventListener('click', function () {
-      mutate(apiPost('toggleSubtaskDone', { id: s.id }), {
-        apply: function (result) { applyTask(result.task); }
+      var updatedSubtasks = (task.subtasks || []).map(function (x) {
+        return x.id === s.id ? Object.assign({}, x, { done: !x.done }) : x;
       });
+      upsertTaskLocal(Object.assign({}, task, { subtasks: updatedSubtasks }));
+      refreshUI();
+      queueOp(newOpKey('togglesub'), 'toggleSubtaskDone', { id: s.id });
     });
 
     var sTitle = document.createElement('span');
@@ -347,9 +557,16 @@ function subtaskBoxEl(task) {
     e.preventDefault();
     var subTitle = input.value.trim();
     if (!subTitle) return;
-    mutate(apiPost('addSubtask', { taskId: task.id, title: subTitle }), {
-      apply: function (result) { applyTask(result.task); }
+    input.value = '';
+    var tempSubId = 'tmp_st_' + Date.now();
+    var updatedTask = Object.assign({}, task, {
+      subtasks: (task.subtasks || []).concat([{
+        id: tempSubId, taskId: task.id, title: subTitle, done: false, createdAt: new Date().toISOString()
+      }])
     });
+    upsertTaskLocal(updatedTask);
+    refreshUI();
+    queueOp(newOpKey('addsub'), 'addSubtask', { taskId: task.id, title: subTitle });
   });
   box.appendChild(form);
 
@@ -447,7 +664,7 @@ function onDragEnd() {
   drag = null;
 
   if (targetDate && targetDate !== task.day) {
-    mutate(apiPost('setDay', { id: task.id, day: targetDate }), { apply: applyTask });
+    updateTaskField(task, { day: targetDate });
   }
 }
 
@@ -528,6 +745,9 @@ function onReorderMove(e) {
 }
 
 function applyReorder(result) {
+  // เช็ค workspace ด้วยเสมอ เผื่อผู้ใช้สลับ workspace ไปแล้วก่อนที่ setTaskOrder ค้างอยู่จะยืนยันกลับมา
+  // (เหตุผลเดียวกับ guard ใน insertTaskLocal — กันทับวันของ workspace ที่กำลังเปิดดูอยู่ผิดๆ)
+  if (!state.board || result.workspace !== state.board.workspace) return;
   var day = state.board.days.find(function (d) { return d.date === result.day; });
   if (day) day.tasks = result.tasks;
 }
@@ -560,7 +780,9 @@ function onReorderEnd() {
   if (targetIdx === -1) return;
   var position = targetIdx + 1 + (insertAfter ? 1 : 0);
 
-  mutate(apiPost('setTaskOrder', { id: task.id, position: position }), { apply: applyReorder });
+  reorderTaskLocal(task.id, task.day, position);
+  refreshUI();
+  queue('reorder:' + task.id, { position: position });
 }
 
 function taskCardEl(task, opts) {
@@ -572,7 +794,7 @@ function taskCardEl(task, opts) {
   check.textContent = task.done ? '✓' : '';
   check.setAttribute('aria-label', 'เสร็จ/ยังไม่เสร็จ');
   check.addEventListener('click', function () {
-    mutate(apiPost('toggleDone', { id: task.id }), { apply: applyTask });
+    updateTaskField(task, { done: !task.done });
   });
 
   var body = document.createElement('div');
@@ -619,7 +841,13 @@ function taskCardEl(task, opts) {
     toToday.textContent = '↥';
     toToday.title = 'ย้ายขึ้นวันนี้';
     toToday.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: todayIso() }), { successToast: 'ย้ายขึ้นวันนี้แล้ว', apply: applyTask });
+      var targetDay = todayIso();
+      // Office ไม่มีวันเสาร์-อาทิตย์ ถ้าตรงกับวันหยุดพอดี ให้ย้ายไปจันทร์ถัดไปแทน
+      if (isWeekdaysOnly(task.workspace) && isWeekend(targetDay)) {
+        targetDay = addDaysIso(mondayOf(targetDay), 7);
+      }
+      updateTaskField(task, { day: targetDay });
+      showToast('ย้ายขึ้นวันนี้แล้ว');
     });
     actions.appendChild(toToday);
   } else {
@@ -627,19 +855,20 @@ function taskCardEl(task, opts) {
     prev.textContent = '←';
     prev.title = 'เลื่อนไปวันก่อนหน้า';
     prev.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: addDaysIso(task.day, -1) }), { apply: applyTask });
+      updateTaskField(task, { day: addBusinessDaysIso(task.workspace, task.day, -1) });
     });
     var next = document.createElement('button');
     next.textContent = '→';
     next.title = 'เลื่อนไปวันถัดไป';
     next.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: addDaysIso(task.day, 1) }), { apply: applyTask });
+      updateTaskField(task, { day: addBusinessDaysIso(task.workspace, task.day, 1) });
     });
     var toSomeday = document.createElement('button');
     toSomeday.textContent = '↧';
     toSomeday.title = 'ย้ายไป Someday';
     toSomeday.addEventListener('click', function () {
-      mutate(apiPost('setDay', { id: task.id, day: 'someday' }), { successToast: 'ย้ายไป Someday แล้ว', apply: applyTask });
+      updateTaskField(task, { day: 'someday' });
+      showToast('ย้ายไป Someday แล้ว');
     });
     actions.appendChild(prev);
     actions.appendChild(next);
@@ -652,7 +881,9 @@ function taskCardEl(task, opts) {
   del.title = 'ลบงานนี้';
   del.addEventListener('click', function () {
     if (!confirm('ลบงาน "' + task.title + '" เลยไหม? กู้คืนไม่ได้')) return;
-    mutate(apiPost('deleteTask', { id: task.id }), { apply: function () { removeTaskLocal(task.id); } });
+    removeTaskLocal(task.id);
+    refreshUI();
+    queueOp(newOpKey('del'), 'deleteTask', { id: task.id });
   });
   actions.appendChild(del);
 
@@ -712,7 +943,16 @@ function renderBoard() {
   boardEl.innerHTML = '';
   if (!state.board) return;
 
+  var weekdaysOnly = isWeekdaysOnly(state.board.workspace);
+
   if (state.view === 'today') {
+    if (weekdaysOnly && isWeekend(state.board.today)) {
+      var weekendHint = document.createElement('p');
+      weekendHint.className = 'empty-hint';
+      weekendHint.textContent = 'วันหยุดสุดสัปดาห์ ไม่มีงาน Office วันนี้';
+      boardEl.appendChild(weekendHint);
+      return;
+    }
     var todayDay = state.board.days.find(function (d) { return d.date === state.board.today; });
     if (todayDay) {
       boardEl.appendChild(daySectionEl(todayDay.date, filterTasks(todayDay.tasks), true));
@@ -721,6 +961,7 @@ function renderBoard() {
     var grid = document.createElement('div');
     grid.className = 'week-grid';
     state.board.days.forEach(function (d) {
+      if (weekdaysOnly && isWeekend(d.date)) return; // Office ไม่มีวันเสาร์-อาทิตย์ให้โชว์
       grid.appendChild(daySectionEl(d.date, filterTasks(d.tasks), d.date === state.board.today));
     });
     boardEl.appendChild(grid);
@@ -991,14 +1232,22 @@ function renderCaptureDayOptions() {
   select.innerHTML = '';
   var monday = mondayOf(todayIso());
   var today = todayIso();
+  var weekdaysOnly = isWeekdaysOnly(state.workspace);
+  var dates = [];
   for (var i = 0; i < 7; i++) {
     var date = addDaysIso(monday, i);
+    if (weekdaysOnly && isWeekend(date)) continue; // Office เลือกได้แค่ จ-ศ
+    dates.push(date);
+  }
+  dates.forEach(function (date) {
     var opt = document.createElement('option');
     opt.value = date;
     opt.textContent = (date === today ? 'วันนี้' : formatDayHeading(date));
     select.appendChild(opt);
-  }
-  select.value = today;
+  });
+  // ถ้าวันนี้เป็นเสาร์-อาทิตย์และ workspace ทำงานแค่ จ-ศ (ไม่มีตัวเลือก "วันนี้" ให้เลือก)
+  // ให้ default ไปวันศุกร์ก่อนหน้า (วันทำการล่าสุดในสัปดาห์นี้) แทน
+  select.value = dates.indexOf(today) !== -1 ? today : dates[dates.length - 1];
 }
 
 // ---------- project picker ----------
@@ -1026,7 +1275,7 @@ function openProjectPicker(task) {
     clearBtn.textContent = '✕ เอาออก';
     clearBtn.addEventListener('click', function () {
       closeProjectPicker();
-      mutate(apiPost('setProject', { id: task.id, project: '' }), { apply: applyTask });
+      updateTaskField(task, { project: '' });
     });
     optionList.appendChild(clearBtn);
   }
@@ -1040,7 +1289,7 @@ function openProjectPicker(task) {
     btn.style.borderColor = 'transparent';
     btn.addEventListener('click', function () {
       closeProjectPicker();
-      mutate(apiPost('setProject', { id: task.id, project: name }), { apply: applyTask });
+      updateTaskField(task, { project: name });
     });
     optionList.appendChild(btn);
   });
@@ -1059,13 +1308,13 @@ function openProjectPicker(task) {
     var name = input.value.trim();
     if (!name) return;
     closeProjectPicker();
-    mutate(
-      apiPost('addProject', { workspace: state.workspace, projectName: name })
-        .then(function (res) {
-          if (!res.ok) return res;
-          return apiPost('setProject', { id: task.id, project: name });
-        })
-    );
+    // เพิ่มชื่อ project ใหม่เข้า master list ในเครื่องทันที + ตั้งให้ task นี้เลย (สอง action นี้เป็น
+    // อิสระจากกันฝั่ง backend อยู่แล้ว ไม่ต้องรอ addProject สำเร็จก่อนค่อยตั้ง project ให้ task)
+    if (state.board && state.board.projects.indexOf(name) === -1) {
+      state.board.projects.push(name);
+    }
+    updateTaskField(task, { project: name });
+    queueOp(newOpKey('addproj'), 'addProject', { workspace: state.workspace, projectName: name });
   });
   picker.appendChild(form);
 
@@ -1085,6 +1334,141 @@ function openProjectPicker(task) {
 function closeProjectPicker() {
   var b = document.getElementById('picker-backdrop');
   var p = document.getElementById('picker-panel');
+  if (b) b.remove();
+  if (p) p.remove();
+}
+
+// ---------- TRUE DREAM — ลิสต์ความฝันส่วนตัว แยกอิสระจาก workspace/task ทั้งหมด ----------
+// ไม่ขีดฆ่าตอนติ๊กเสร็จเหมือน task (นี่คือความฝัน ไม่ใช่ภาระ) แต่โชว์วันที่ทำสำเร็จแทน พร้อม toast ฉลอง
+var DREAM_MONTHS_TH = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+function formatDreamDate(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  return d.getDate() + ' ' + DREAM_MONTHS_TH[d.getMonth()] + ' ' + (d.getFullYear() + 543);
+}
+
+function openDreamsPanel() {
+  if (!state.dreamsData) {
+    loadDreams();
+  } else {
+    renderDreamsPanel();
+  }
+}
+
+function loadDreams() {
+  state.dreamsLoading = true;
+  renderDreamsPanel();
+  apiGet({ action: 'getDreams' })
+    .then(function (res) {
+      if (!res.ok) throw new Error(res.error || 'โหลด TRUE DREAM ไม่สำเร็จ');
+      state.dreamsData = res.data;
+    })
+    .catch(function (err) { showToast('ผิดพลาด: ' + err.message); })
+    .then(function () {
+      state.dreamsLoading = false;
+      renderDreamsPanel();
+    });
+}
+
+function dreamRowEl(dream) {
+  var row = document.createElement('div');
+  row.className = 'dream-row' + (dream.done ? ' done' : '');
+
+  var check = document.createElement('button');
+  check.className = 'dream-check';
+  check.textContent = dream.done ? '🎉' : '';
+  check.setAttribute('aria-label', 'ทำสำเร็จแล้ว/ยังไม่สำเร็จ');
+  check.addEventListener('click', function () {
+    var nowDone = !dream.done;
+    var idx = state.dreamsData.findIndex(function (d) { return d.id === dream.id; });
+    if (idx !== -1) {
+      state.dreamsData[idx] = Object.assign({}, dream, {
+        done: nowDone,
+        completedAt: nowDone ? new Date().toISOString() : ''
+      });
+    }
+    renderDreamsPanel();
+    if (nowDone) showToast('🎉 ยินดีด้วย! ความฝันข้อนี้เป็นจริงแล้ว');
+    queueOp(newOpKey('toggledream'), 'toggleDreamDone', { id: dream.id });
+  });
+  row.appendChild(check);
+
+  var body = document.createElement('div');
+  body.className = 'dream-body';
+  var title = document.createElement('div');
+  title.className = 'dream-title';
+  title.textContent = dream.title;
+  body.appendChild(title);
+  if (dream.done) {
+    var dateEl = document.createElement('div');
+    dateEl.className = 'dream-date';
+    dateEl.textContent = '🎉 สำเร็จเมื่อ ' + formatDreamDate(dream.completedAt);
+    body.appendChild(dateEl);
+  }
+  row.appendChild(body);
+
+  return row;
+}
+
+function renderDreamsPanel() {
+  closeDreamsPanel();
+
+  var backdrop = document.createElement('div');
+  backdrop.className = 'backdrop';
+  backdrop.id = 'dreams-backdrop';
+  backdrop.addEventListener('click', closeDreamsPanel);
+
+  var panel = document.createElement('div');
+  panel.className = 'dreams-panel';
+  panel.id = 'dreams-panel';
+
+  var h3 = document.createElement('h3');
+  h3.textContent = '🌟 TRUE DREAM';
+  panel.appendChild(h3);
+
+  if (state.dreamsLoading) {
+    var loadingHint = document.createElement('p');
+    loadingHint.className = 'empty-hint';
+    loadingHint.textContent = 'กำลังโหลด...';
+    panel.appendChild(loadingHint);
+  } else if (state.dreamsData) {
+    var list = document.createElement('div');
+    list.className = 'dreams-list';
+    state.dreamsData.forEach(function (dream) { list.appendChild(dreamRowEl(dream)); });
+    panel.appendChild(list);
+
+    var form = document.createElement('form');
+    form.className = 'dreams-add-form';
+    var input = document.createElement('input');
+    input.placeholder = '+ เพิ่มความฝันใหม่…';
+    form.appendChild(input);
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var title = input.value.trim();
+      if (!title) return;
+      input.value = '';
+      var tempId = 'tmp_dream_' + Date.now();
+      state.dreamsData.push({ id: tempId, title: title, done: false, completedAt: '', createdAt: new Date().toISOString() });
+      renderDreamsPanel();
+      queueOp(newOpKey('adddream'), 'addDream', { title: title, tempId: tempId });
+    });
+    panel.appendChild(form);
+  }
+
+  var closeBtn = document.createElement('button');
+  closeBtn.className = 'close-btn';
+  closeBtn.textContent = 'ปิด';
+  closeBtn.addEventListener('click', closeDreamsPanel);
+  panel.appendChild(closeBtn);
+
+  document.body.appendChild(backdrop);
+  document.body.appendChild(panel);
+}
+
+function closeDreamsPanel() {
+  var b = document.getElementById('dreams-backdrop');
+  var p = document.getElementById('dreams-panel');
   if (b) b.remove();
   if (p) p.remove();
 }
@@ -1110,7 +1494,10 @@ function loadBoard() {
   return apiGet({ action: 'getBoard', workspace: state.workspace, weekStart: state.weekStart })
     .then(function (res) {
       if (!res.ok) throw new Error(res.error || 'โหลดข้อมูลไม่สำเร็จ');
-      state.board = res.data;
+      // ใช้ merge เดียวกับตอน poll เสมอ (ไม่ใช่แค่ทับ state.board ตรงๆ) กัน task ที่เพิ่ง optimistic
+      // เพิ่ม/แก้/ลบไว้แล้วยังอยู่ในคิวไม่ทันส่งเสร็จ หายวับไปตอนโหลดบอร์ดรอบแรกหลังเปิดหน้าใหม่
+      mergeServerBoard(res.data);
+      lastBoardSignature = boardSignature(res.data); // sync baseline ให้ poll รอบถัดไปเทียบถูกจุด
       cacheBoard(state.board);
       refreshUI();
     })
@@ -1122,6 +1509,110 @@ function loadBoard() {
     });
 }
 
+// ---------- polling: เช็คข้อมูลใหม่จาก server เป็นระยะ ไม่ต้องรอผู้ใช้กดอะไรเอง ----------
+// เทียบลายเซ็น JSON ก่อนเสมอ ไม่ re-render ถ้าไม่มีอะไรเปลี่ยนจริง (กันจอกระพริบ/เปลืองแรงเปล่าๆ)
+// และตอน merge ต้อง "ป้องกัน" ไม่ให้ข้อมูลเก่าจาก server ทับสิ่งที่เรากำลังแก้/ลบ/เพิ่มค้างอยู่ในคิว
+var POLL_INTERVAL_MS = 4500;
+var lastBoardSignature = null;
+
+function boardSignature(board) {
+  return JSON.stringify(board);
+}
+
+function findTaskAnywhereLocal(id) {
+  if (!state.board) return null;
+  for (var i = 0; i < state.board.days.length; i++) {
+    var found = state.board.days[i].tasks.find(function (t) { return t.id === id; });
+    if (found) return found;
+  }
+  return state.board.someday.find(function (t) { return t.id === id; }) || null;
+}
+
+function collectDirtyTaskIds() {
+  var ids = new Set();
+  Object.keys(queueStore).forEach(function (k) { if (k.indexOf('task:') === 0) ids.add(k.slice(5)); });
+  Object.keys(inFlightData).forEach(function (k) { if (k.indexOf('task:') === 0) ids.add(k.slice(5)); });
+  return ids;
+}
+
+function scanOneOffOps(predicate) {
+  var out = [];
+  function scan(dataObj) { if (dataObj && predicate(dataObj)) out.push(dataObj); }
+  Object.keys(queueStore).forEach(function (k) { if (k.indexOf('op:') === 0) scan(queueStore[k].data); });
+  Object.keys(inFlightData).forEach(function (k) { if (k.indexOf('op:') === 0) scan(inFlightData[k]); });
+  return out;
+}
+
+function collectPendingDeleteIds() {
+  var ids = new Set();
+  scanOneOffOps(function (d) { return d.action === 'deleteTask'; })
+    .forEach(function (d) { ids.add(d.params.id); });
+  return ids;
+}
+
+// task ที่เพิ่งเพิ่มแบบ optimistic แต่ server ยังไม่ยืนยันกลับมา (ยังเป็น temp id อยู่) — ต้องเติมกลับ
+// เข้าไปในบอร์ดที่ได้จาก server ทุกครั้งที่ poll ไม่งั้นจะหายวับไปจากจอจนกว่า addTask จะสำเร็จจริง
+function collectPendingCreates() {
+  var creates = [];
+  scanOneOffOps(function (d) { return d.action === 'addTask'; })
+    .forEach(function (d) {
+      var t = findTaskAnywhereLocal(d.params.tempId);
+      if (t) creates.push(t);
+    });
+  return creates;
+}
+
+function mergeServerBoard(serverBoard) {
+  var dirtyIds = collectDirtyTaskIds();
+  var deleteIds = collectPendingDeleteIds();
+  var pendingCreates = collectPendingCreates();
+  var prevBoard = state.board;
+
+  function protect(tasks, findLocal) {
+    return tasks
+      .filter(function (t) { return !deleteIds.has(t.id); })
+      .map(function (t) {
+        if (!dirtyIds.has(t.id)) return t;
+        var local = findLocal(t.id);
+        return local || t; // ยังมีการแก้ไขค้างอยู่ในคิวสำหรับ task นี้ ใช้ของเครื่องไปก่อน ไม่ทับด้วยของ server
+      });
+  }
+
+  serverBoard.days.forEach(function (d) {
+    var localDay = prevBoard && prevBoard.days.find(function (ld) { return ld.date === d.date; });
+    d.tasks = protect(d.tasks, function (id) {
+      return localDay && localDay.tasks.find(function (t) { return t.id === id; });
+    });
+  });
+  serverBoard.someday = protect(serverBoard.someday, function (id) {
+    return prevBoard && prevBoard.someday.find(function (t) { return t.id === id; });
+  });
+
+  state.board = serverBoard;
+  pendingCreates.forEach(function (t) { insertTaskLocal(t); });
+}
+
+function pollBoard() {
+  if (document.hidden) return; // แท็บไม่ได้เปิดดูอยู่ ไม่ต้อง poll เปลืองเปล่าๆ
+  apiGet({ action: 'getBoard', workspace: state.workspace, weekStart: state.weekStart })
+    .then(function (res) {
+      if (!res.ok) return;
+      var sig = boardSignature(res.data);
+      if (sig === lastBoardSignature) return; // ไม่มีอะไรเปลี่ยนจาก server เลย ไม่ต้อง re-render
+      lastBoardSignature = sig;
+      mergeServerBoard(res.data);
+      cacheBoard(state.board);
+      refreshUI();
+    })
+    .catch(function () { /* poll เงียบๆ พังไม่ต้องแจ้งเตือนรบกวน ลองใหม่รอบถัดไปเอง */ });
+}
+
+function startPolling() {
+  setInterval(pollBoard, POLL_INTERVAL_MS);
+}
+
+document.getElementById('dreams-btn').addEventListener('click', openDreamsPanel);
+
 // ---------- events ----------
 document.getElementById('workspace-tabs').addEventListener('click', function (e) {
   var btn = e.target.closest('.tab-btn');
@@ -1131,6 +1622,7 @@ document.getElementById('workspace-tabs').addEventListener('click', function (e)
   state.historyData = null; // ประวัติเป็นของแต่ละ workspace แยกกัน ต้องโหลดใหม่ตอนสลับ
   state.historyExpanded = false;
   localStorage.setItem('ts_workspace', state.workspace);
+  renderCaptureDayOptions(); // Office เลือกได้แค่ จ-ศ ต้องคำนวณตัวเลือกใหม่ทุกครั้งที่สลับ workspace
   tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
   loadBoard();
   renderTabs();
@@ -1167,7 +1659,15 @@ document.getElementById('capture-form').addEventListener('submit', function (e) 
   var day = daySelect.value || todayIso();
   input.value = '';
   renderCaptureDayOptions(); // รีเซ็ตกลับเป็นวันนี้ให้ครั้งถัดไป ไม่ค้างวันที่เพิ่งเลือก
-  mutate(apiPost('addTask', { workspace: state.workspace, title: title, day: day }), { apply: insertTaskLocal });
+
+  var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  insertTaskLocal({
+    id: tempId, workspace: state.workspace, title: title, project: '', day: day,
+    weekStart: (day === 'someday') ? '' : mondayOf(day), done: false,
+    createdAt: new Date().toISOString(), completedAt: '', order: 999999, subtasks: []
+  });
+  refreshUI();
+  queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: day, tempId: tempId });
 });
 
 document.getElementById('someday-form').addEventListener('submit', function (e) {
@@ -1176,15 +1676,25 @@ document.getElementById('someday-form').addEventListener('submit', function (e) 
   var title = input.value.trim();
   if (!title) return;
   input.value = '';
-  mutate(apiPost('addTask', { workspace: state.workspace, title: title, day: 'someday' }), { apply: insertTaskLocal });
+
+  var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  insertTaskLocal({
+    id: tempId, workspace: state.workspace, title: title, project: '', day: 'someday',
+    weekStart: '', done: false, createdAt: new Date().toISOString(), completedAt: '', order: 0, subtasks: []
+  });
+  refreshUI();
+  queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: 'someday', tempId: tempId });
 });
 
 // ---------- init ----------
 applyMonthTheme();
 renderTabs();
 renderCaptureDayOptions();
+loadQueueFromStorage(); // งานที่ยังไม่ได้ส่งจากรอบก่อน (ปิดหน้าไปตอนกำลังส่งอยู่) ค้างไว้ใน localStorage
 tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
 loadBoard(); // apiGet มี retry ในตัวอยู่แล้วเผื่อเจอ interstitial ตอนเปิดแอปครั้งแรก ไม่ต้องยิง warm-up แยกอีกรอบ
+flushAll(); // ส่งของที่ค้างจากรอบก่อนต่อทันที
+startPolling(); // เช็คข้อมูลใหม่จาก server เป็นระยะ เผื่อมีการแก้จากเครื่อง/แท็บอื่น
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {

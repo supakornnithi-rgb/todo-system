@@ -243,6 +243,7 @@ function setTaskOrder_(id, position) {
 
   return {
     day: moved.day,
+    workspace: moved.workspace,
     tasks: siblings.map(function (t) { return cleanTask_(t, getSubtasksForTask_(t.id)); })
   };
 }
@@ -270,6 +271,36 @@ function setProject_(id, project) {
   var t = findTaskRow_(id);
   updateRowFields_(TASKS_SHEET, t.__row, { project: project || '' });
   t.project = project || '';
+  return cleanTask_(t, getSubtasksForTask_(id));
+}
+
+/**
+ * แก้หลาย field ของ task เดียวพร้อมกันในคำขอเดียว (title/project/day/done/order) — ใช้แทน
+ * setTitle_/setProject_/setDay_/toggleDone_ แยกๆ ตอนฝั่ง frontend รวมการแก้ไขหลายครั้งเป็น POST เดียว
+ * (debounce+merge) ส่งแค่ field ที่เปลี่ยนจริงมาก็พอ ไม่ต้องส่งครบทุก field
+ */
+function updateTask_(id, fields) {
+  fields = fields || {};
+  var t = findTaskRow_(id);
+  var patch = {};
+
+  ['title', 'project', 'day', 'done', 'order'].forEach(function (k) {
+    if (fields.hasOwnProperty(k)) patch[k] = fields[k];
+  });
+
+  if (patch.hasOwnProperty('day')) {
+    patch.weekStart = (patch.day === 'someday') ? '' : mondayOf_(patch.day);
+  }
+  if (patch.hasOwnProperty('done')) {
+    var alreadyDone = (t.done === true || t.done === 'TRUE');
+    if (patch.done && !alreadyDone) patch.completedAt = new Date().toISOString();
+    else if (!patch.done) patch.completedAt = '';
+  }
+
+  if (Object.keys(patch).length > 0) {
+    updateRowFields_(TASKS_SHEET, t.__row, patch);
+    Object.assign(t, patch);
+  }
   return cleanTask_(t, getSubtasksForTask_(id));
 }
 

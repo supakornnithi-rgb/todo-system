@@ -58,3 +58,44 @@ function migrateTaskOrder() {
 
   Logger.log('เติมค่า order ให้งานเก่าเรียบร้อย: ' + updated + ' งาน');
 }
+
+// รันครั้งเดียวเพื่อสร้างแท็บ Dreams (ถ้ายังไม่มี) พร้อมหัวตาราง แล้วเติมลิสต์ TRUE DREAM เริ่มต้นให้
+// (ข้ามการเติมถ้ามีข้อมูลอยู่แล้ว กันรันซ้ำแล้วได้ข้อมูลซ้อนกัน)
+function setupDreamsSheet() {
+  var ss = getSpreadsheet_();
+  var sheet = ss.getSheetByName(DREAMS_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(DREAMS_SHEET);
+  }
+  var header = ['id', 'title', 'done', 'completedAt', 'createdAt'];
+  sheet.getRange(1, 1, 1, header.length).setValues([header]);
+
+  if (sheet.getLastRow() > 1) {
+    Logger.log('แท็บ Dreams มีข้อมูลอยู่แล้ว ข้ามการเติมลิสต์เริ่มต้น');
+    return;
+  }
+
+  var seedTitles = [
+    "Build business that can support people around me grow up together.",
+    "Create our working environment.",
+    "Marry with Pink.",
+    "Go to Japan for holiday with unlimited budget.",
+    "Play Ragnarok Online with my girlfriend.",
+    "Build condominium project.",
+    "Build hotel project.",
+    "Retire before age at 50.",
+    "Share all of my experience to next gen.",
+    "Build something that give advantages to people in real life.",
+    "Craate some single music that p'Sing is the main singer band group",
+    "Repay for Na'Kae",
+    "Repay for E'Niew",
+    "Repay for Sakao"
+  ];
+  seedTitles.forEach(function (title, i) {
+    sheet.appendRow([
+      'dream_' + new Date().getTime() + '_' + i,
+      title, false, '', new Date().toISOString()
+    ]);
+  });
+  Logger.log('สร้างแท็บ Dreams และเติมลิสต์เริ่มต้น ' + seedTitles.length + ' รายการเรียบร้อยแล้ว');
+}

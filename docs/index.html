@@ -13,7 +13,10 @@
 <body>
   <div class="loading-bar" id="loading-bar"></div>
   <header>
-    <p class="app-title">todo-system</p>
+    <div class="header-row">
+      <p class="app-title">todo-system</p>
+      <button class="dreams-btn" id="dreams-btn" type="button">🌟 TRUE DREAM</button>
+    </div>
     <p class="status-line" id="status-line" hidden></p>
     <div class="tabs" id="workspace-tabs">
       <button class="tab-btn active" data-workspace="Personal">Personal</button>
@@ -54,6 +57,7 @@
   </main>
 
   <div class="toast" id="toast"></div>
+  <div class="queue-status" id="queue-status" hidden></div>
 
   <script src="app.js"></script>
 </body>
