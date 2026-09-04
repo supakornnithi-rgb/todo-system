@@ -240,8 +240,8 @@ main {
 
 .capture-form {
   display: flex;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: 6px;
+  padding: 12px 12px;
   position: sticky;
   top: 96px;
   z-index: 9;
@@ -250,6 +250,7 @@ main {
 
 .capture-form input {
   flex: 1;
+  min-width: 0;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -265,8 +266,8 @@ main {
 
 .capture-day-select {
   flex-shrink: 0;
-  max-width: 96px;
-  padding: 0 8px;
+  max-width: 76px;
+  padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
   font-size: 13px;
@@ -277,6 +278,26 @@ main {
 .capture-day-select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.capture-submit-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: auto;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.someday-form .capture-submit-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 17px;
 }
 
 .overdue-banner {

@@ -585,32 +585,41 @@ var DRAG_HOLD_MS = 350;
 var DRAG_MOVE_CANCEL_PX = 24;
 
 function attachDragHandlers(card, task) {
-  card.style.touchAction = 'none';
-
+  // ไม่ตั้ง touch-action:none ที่การ์ดทั้งใบ (ต่างจาก handle ⠿ ที่เป็นจุดเล็กๆ) เพราะการ์ดในมุมมอง
+  // Week กินพื้นที่เกือบเต็มจอ ถ้ากันการเลื่อนหน้าจอตรงนี้ด้วยจะเลื่อน list ขึ้นลงไม่ได้เลยถ้านิ้วเริ่ม
+  // แตะบนการ์ด (นี่คือสาเหตุที่เลื่อนจอค้างบ่อยบนมือถือ) ปล่อยให้เบราว์เซอร์ scroll ได้ตามปกติ แล้วใช้
+  // ตัวจับเวลา+ระยะขยับ (เหมือน handle) แยกแยะเอาว่าจะลากหรือแค่เลื่อนจอ
   card.addEventListener('pointerdown', function (e) {
     if (e.target.closest('button, input, form')) return; // ปล่อยให้ปุ่ม/ช่องกรอกทำงานปกติ
     if (e.button !== undefined && e.button !== 0) return; // เมาส์ใช้ได้แค่คลิกซ้าย
 
     var startX = e.clientX, startY = e.clientY;
     var timer = setTimeout(function () {
-      card.removeEventListener('pointermove', cancelIfMoved);
-      card.removeEventListener('pointerup', cancelTimer);
+      cleanup();
       startDrag(card, task, startX, startY);
     }, DRAG_HOLD_MS);
 
     function cancelIfMoved(ev) {
       if (Math.abs(ev.clientX - startX) > DRAG_MOVE_CANCEL_PX || Math.abs(ev.clientY - startY) > DRAG_MOVE_CANCEL_PX) {
         clearTimeout(timer);
-        card.removeEventListener('pointermove', cancelIfMoved);
+        cleanup();
       }
     }
-    function cancelTimer() {
-      clearTimeout(timer);
+    function cleanup() {
       card.removeEventListener('pointermove', cancelIfMoved);
-      card.removeEventListener('pointerup', cancelTimer);
+      card.removeEventListener('pointerup', cleanup);
+      card.removeEventListener('pointercancel', cleanup);
+    }
+    function onEnd() {
+      clearTimeout(timer);
+      cleanup();
     }
     card.addEventListener('pointermove', cancelIfMoved);
-    card.addEventListener('pointerup', cancelTimer, { once: true });
+    card.addEventListener('pointerup', onEnd, { once: true });
+    // เบราว์เซอร์แย่งท่าทางนี้ไปทำ scroll เอง (พบบ่อยบนมือถือเพราะไม่ได้ตั้ง touch-action:none) จะได้
+    // pointercancel แทน pointerup/pointermove ต่อเนื่อง — ต้องยกเลิกตัวจับเวลาด้วย ไม่งั้นจะหลุดมาเริ่ม
+    // ลากเองตอนที่ผู้ใช้แค่กำลังเลื่อนจอปกติอยู่ (คือสาเหตุที่เลื่อนจอ "ค้าง" ที่เจอ)
+    card.addEventListener('pointercancel', onEnd, { once: true });
   });
 }
 
@@ -679,24 +688,28 @@ function attachReorderHandle(handle, card, task) {
     if (e.button !== undefined && e.button !== 0) return;
     var startX = e.clientX, startY = e.clientY;
     var timer = setTimeout(function () {
-      handle.removeEventListener('pointermove', cancelIfMoved);
-      handle.removeEventListener('pointerup', cancelTimer);
+      cleanup();
       startReorderDrag(card, task, startX, startY);
     }, DRAG_HOLD_MS);
 
     function cancelIfMoved(ev) {
       if (Math.abs(ev.clientX - startX) > DRAG_MOVE_CANCEL_PX || Math.abs(ev.clientY - startY) > DRAG_MOVE_CANCEL_PX) {
         clearTimeout(timer);
-        handle.removeEventListener('pointermove', cancelIfMoved);
+        cleanup();
       }
     }
-    function cancelTimer() {
-      clearTimeout(timer);
+    function cleanup() {
       handle.removeEventListener('pointermove', cancelIfMoved);
-      handle.removeEventListener('pointerup', cancelTimer);
+      handle.removeEventListener('pointerup', onEnd);
+      handle.removeEventListener('pointercancel', onEnd);
+    }
+    function onEnd() {
+      clearTimeout(timer);
+      cleanup();
     }
     handle.addEventListener('pointermove', cancelIfMoved);
-    handle.addEventListener('pointerup', cancelTimer, { once: true });
+    handle.addEventListener('pointerup', onEnd, { once: true });
+    handle.addEventListener('pointercancel', onEnd, { once: true }); // เผื่อระบบแย่งท่าทางไปกลางคัน
   });
 }
 
