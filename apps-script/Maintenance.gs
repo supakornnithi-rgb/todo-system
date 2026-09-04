@@ -99,3 +99,16 @@ function setupDreamsSheet() {
   });
   Logger.log('สร้างแท็บ Dreams และเติมลิสต์เริ่มต้น ' + seedTitles.length + ' รายการเรียบร้อยแล้ว');
 }
+
+// รันครั้งเดียวเพื่อสร้างแท็บ LineIndex (ถ้ายังไม่มี) พร้อมหัวตาราง — ต้องรันก่อนใช้เฟส LINE bot ได้
+// (sendDailySummary ใน Line.gs ล้าง+เขียนแท็บนี้ใหม่ทุกครั้งที่ส่งสรุปงาน ไม่ต้องเติมข้อมูลเริ่มต้น)
+function setupLineIndexSheet() {
+  var ss = getSpreadsheet_();
+  var sheet = ss.getSheetByName(LINE_INDEX_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(LINE_INDEX_SHEET);
+  }
+  var header = ['number', 'taskId', 'workspace', 'dateKey', 'createdAt'];
+  sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  Logger.log('สร้างแท็บ "' + LINE_INDEX_SHEET + '" พร้อมหัวตารางเรียบร้อยแล้ว');
+}

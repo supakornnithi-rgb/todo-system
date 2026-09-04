@@ -28,13 +28,21 @@ function doGet(e) {
  * คิว retry/merge ก็อาจมีมากกว่า 1 คำขอค้างอยู่ในเวลาใกล้กันได้) และเช็ค opId ผ่าน CacheService ก่อน
  * เสมอ — ถ้าเคยประมวลผล opId นี้ไปแล้ว (client อาจ retry เพราะ response หลุดหายทั้งที่ backend
  * เขียนสำเร็จไปแล้วจริง) จะคืนผลลัพธ์เดิมที่ cache ไว้ ไม่ทำซ้ำ กัน addTask/addSubtask ซ้ำซ้อน
+ *
+ * Web App เดียวกันนี้รับทั้งคำขอจาก PWA (JSON รูปแบบ {action, opId, ...} ของเราเอง) และ webhook
+ * จาก LINE (JSON รูปแบบ {destination, events: [...]} ของ LINE) เข้า URL เดียวกัน — แยกเส้นทาง
+ * ด้วยการเช็ค body.events ก่อนเข้ากลไก lock/opId ของฝั่งเรา (ดู handleLineWebhook_ ใน Line.gs)
  */
 function doPost(e) {
+  var body = JSON.parse(e.postData.contents);
+  if (body.events) {
+    return handleLineWebhook_(body);
+  }
+
   var lock = LockService.getScriptLock();
   var response;
   try {
     lock.waitLock(10000);
-    var body = JSON.parse(e.postData.contents);
     var opId = body.opId;
     var cache = CacheService.getScriptCache();
 

@@ -50,3 +50,27 @@ function listTriggers() {
   });
   Logger.log('Triggers ที่ติดตั้งอยู่ตอนนี้: ' + JSON.stringify(triggers));
 }
+
+/**
+ * รันฟังก์ชันนี้ครั้งเดียวจากหน้า editor เพื่อติดตั้ง trigger ส่งสรุปงานผ่าน LINE (sendDailySummary
+ * ใน Line.gs) อัตโนมัติทุกวัน 9:00 และ 16:00 (Asia/Bangkok) — ลบ trigger เดิมที่ชื่อซ้ำก่อนเสมอ
+ */
+function installLineTriggers() {
+  removeLineTriggers();
+  [9, 16].forEach(function (hour) {
+    ScriptApp.newTrigger('sendDailySummary')
+      .timeBased()
+      .everyDays(1)
+      .atHour(hour)
+      .create();
+  });
+  Logger.log('ติดตั้ง trigger สำเร็จ: sendDailySummary จะรันอัตโนมัติทุกวัน 9:00 และ 16:00 (Asia/Bangkok)');
+}
+
+function removeLineTriggers() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'sendDailySummary') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+}
