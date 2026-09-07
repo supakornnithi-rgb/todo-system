@@ -136,8 +136,10 @@ function getBoard_(workspace, weekStartIso) {
 
 // จำนวนงาน (ไม่รวม someday) ของ workspace+day นั้น — ใช้คำนวณว่างานใหม่/งานที่ย้ายมาควรได้ order
 // เท่าไหร่ (ต่อท้ายลำดับเสมอ ผู้ใช้ค่อยลากจัดตำแหน่งเองทีหลังได้ผ่าน setTaskOrder_)
+// ต้อง normalizeTaskRow_ ก่อนเทียบ day เสมอ (Sheets แปลง "2026-09-07" เป็น Date object เองตอนเก็บ
+// เทียบ Date object === string ตรงๆ จะ false เสมอ นับได้ 0 ทุกครั้งทั้งที่วันนั้นมีงานอยู่แล้ว)
 function countTasksInDay_(workspace, day) {
-  return readRows_(TASKS_SHEET).filter(function (t) { return t.workspace === workspace && t.day === day; }).length;
+  return readRows_(TASKS_SHEET).map(normalizeTaskRow_).filter(function (t) { return t.workspace === workspace && t.day === day; }).length;
 }
 
 /**

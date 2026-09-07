@@ -308,9 +308,14 @@ function applyQueueResult(key, entry, res) {
 
 // แก้ field ของ task เดียว — อัปเดตจอทันที (optimistic) แล้วค่อยเข้าคิวส่งจริงแบบ debounce+merge
 function updateTaskField(task, fields) {
-  upsertTaskLocal(Object.assign({}, task, fields));
+  var localPatch = fields;
+  // ย้ายวัน (day เปลี่ยน) ฝั่ง backend ต่อท้ายลำดับของวันใหม่เสมอ (setDay_/updateTask_ ใน Tasks.gs)
+  // ตั้ง order ชั่วคราวให้ไปท้ายสุดตอน optimistic ด้วย กัน insertTaskLocal เอา order เดิมจากวันก่อน
+  // (ซึ่งอาจตรงกับตำแหน่งกลางๆ ของวันใหม่) มาจัดตำแหน่งผิดจนกว่า server จะยืนยันค่าจริงกลับมา
+  if (fields.day && fields.day !== task.day) localPatch = Object.assign({ order: 999999 }, fields);
+  upsertTaskLocal(Object.assign({}, task, localPatch));
   refreshUI();
-  queue('task:' + task.id, fields);
+  queue('task:' + task.id, fields); // ส่ง fields เดิมไป backend เท่านั้น ไม่ส่ง order ปลอมที่เติมไว้แค่ฝั่งจอ
 }
 
 // จัดลำดับใน state.board ทันที (optimistic) ก่อนเข้าคิวส่งจริง — ลอกวิธีคำนวณตำแหน่งแบบเดียวกับ backend
@@ -383,6 +388,9 @@ function filterTasks(tasks) {
 
 // ---------- แก้ state.board ในเครื่องโดยตรงจากผลลัพธ์ POST เพื่อไม่ต้อง loadBoard() ซ้ำ (เร็วขึ้นเท่าตัว) ----------
 function byCreatedAt(a, b) { return a.createdAt < b.createdAt ? -1 : (a.createdAt > b.createdAt ? 1 : 0); }
+// ต้องตรงกับ byOrder ฝั่ง backend (Tasks.gs) เป๊ะ — งานในแต่ละวันเรียงตาม order (ตำแหน่งลากจัด) ไม่ใช่เวลาสร้าง
+// ใช้ createdAt เป็น tie-breaker เฉยๆ ตอน order เท่ากัน (เผื่องานใหม่ที่ยังไม่ได้ order จริงจาก server)
+function byOrder(a, b) { return (a.order || 0) - (b.order || 0) || byCreatedAt(a, b); }
 
 function removeTaskLocal(id) {
   if (!state.board) return;
@@ -406,7 +414,7 @@ function insertTaskLocal(task) {
     var day = state.board.days.find(function (d) { return d.date === task.day; });
     if (day) {
       day.tasks.push(task);
-      day.tasks.sort(byCreatedAt);
+      day.tasks.sort(byOrder);
     }
     // ถ้า task.day ไม่ได้อยู่ในสัปดาห์ที่กำลังเปิดดูอยู่ตอนนี้ ก็แค่ไม่โผล่ในมุมมองปัจจุบัน ถูกต้องแล้ว
   }
