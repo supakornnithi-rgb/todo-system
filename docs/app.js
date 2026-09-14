@@ -157,6 +157,7 @@ var QUEUE_STORAGE_KEY = 'ts_write_queue';
 var QUEUE_DEBOUNCE_MS = 600;
 var QUEUE_RETRY_BASE_MS = 2000;
 var QUEUE_RETRY_MAX_MS = 15000;
+var QUEUE_ERROR_RETRY_LIMIT = 3; // backend ตอบ {ok:false} (เช่น LockService timeout) retry ได้กี่ครั้งก่อนยอมแพ้
 
 var queueStore = {};  // key -> { opId, data } ที่ยังไม่ได้ส่ง (คงอยู่ข้าม reload ผ่าน localStorage)
 var queueMeta = {};   // key -> { timer, busy, attempts } — สถานะรันไทม์ล้วนๆ ไม่ persist
@@ -211,6 +212,16 @@ function scheduleFlush(key) {
   meta.timer = setTimeout(function () { flush(key); }, QUEUE_DEBOUNCE_MS);
 }
 
+// ตั้ง retry แบบถอยหลังเอ็กซ์โพเนนเชียล 2s,4s,8s,... สูงสุด 15s — ใช้ร่วมกันทั้งตอนเน็ตหลุด
+// และตอน backend ตอบ {ok:false} ชั่วคราว (ดู flush()) ถ้ามี queue() ใหม่เข้ามาระหว่างนี้ ก็ merge
+// เข้า entry เดิมไปแล้วโดยอัตโนมัติ
+function scheduleRetry(key, meta) {
+  meta.attempts++;
+  var delay = Math.min(QUEUE_RETRY_BASE_MS * Math.pow(2, meta.attempts - 1), QUEUE_RETRY_MAX_MS);
+  meta.timer = setTimeout(function () { flush(key); }, delay);
+  updateQueueStatus();
+}
+
 function flush(key) {
   var meta = queueMetaFor(key);
   clearTimeout(meta.timer);
@@ -226,9 +237,18 @@ function flush(key) {
 
   sendQueuedEntry(key, entry)
     .then(function (res) {
-      meta.attempts = 0;
-      meta.busy = false;
       delete inFlightData[key];
+      meta.busy = false;
+
+      // backend ตอบกลับมาจริง (เชื่อมต่อไม่ได้พัง) แต่ทำไม่สำเร็จ — ส่วนใหญ่เป็น LockService รอเกิน
+      // 10 วิแล้ว throw ชั่วคราว ไม่ใช่ข้อผิดพลาดถาวร ให้โอกาส retry แบบเดียวกับเน็ตหลุดก่อนจำนวนหนึ่ง
+      // กัน "กดแล้วเฟล ต้องกดเอง" ที่เจอ — เกินจำนวนนี้ค่อยยอมแพ้จริงๆ ผ่าน applyQueueResult ด้านล่าง
+      if (!res.ok && meta.attempts < QUEUE_ERROR_RETRY_LIMIT) {
+        scheduleRetry(key, meta);
+        return;
+      }
+
+      meta.attempts = 0;
       // ลบออกจากคิว persisted เฉพาะตอนไม่มีใครมาแก้ทับระหว่างที่ส่งอยู่ (opId ยังตรงกับตอนเริ่มส่ง)
       // ถ้ามี intent ใหม่เข้ามาระหว่างนั้น entry ปัจจุบันจะมี opId ใหม่แล้ว ต้องเก็บไว้ส่งต่อ ไม่ลบทิ้ง
       if (queueStore[key] && queueStore[key].opId === dispatchedOpId) {
@@ -240,15 +260,11 @@ function flush(key) {
       else updateQueueStatus();
     })
     .catch(function () {
-      // ส่งไม่สำเร็จ (เชื่อมต่อพัง ไม่ใช่ backend ปฏิเสธ) — entry ยังอยู่ใน queueStore เหมือนเดิม
-      // (ไม่เคยลบออกตั้งแต่แรก) แค่ปลด busy แล้วตั้ง retry แบบถอยหลังเอ็กซ์โพเนนเชียล 2s,4s,8s,...
-      // สูงสุด 15s — ถ้ามี queue() ใหม่เข้ามาระหว่างนี้ ก็ merge เข้า entry เดิมไปแล้วโดยอัตโนมัติ
+      // ส่งไม่สำเร็จ (เชื่อมต่อพังจริง) — entry ยังอยู่ใน queueStore เหมือนเดิม (ไม่เคยลบออกตั้งแต่แรก)
+      // retry ไม่จำกัดจำนวนครั้ง (ต่างจากกรณี backend ตอบ {ok:false} ด้านบน) เพราะเน็ตกลับมาเมื่อไหร่ก็ได้
       delete inFlightData[key];
       meta.busy = false;
-      meta.attempts++;
-      var delay = Math.min(QUEUE_RETRY_BASE_MS * Math.pow(2, meta.attempts - 1), QUEUE_RETRY_MAX_MS);
-      meta.timer = setTimeout(function () { flush(key); }, delay);
-      updateQueueStatus();
+      scheduleRetry(key, meta);
     });
 }
 

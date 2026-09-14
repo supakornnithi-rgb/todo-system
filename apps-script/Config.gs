@@ -11,8 +11,16 @@ function getSpreadsheetId_() {
   return id;
 }
 
+// SpreadsheetApp.openById เป็นคำสั่งที่แพงที่สุดในบรรดาการอ่าน/เขียนชีตทั้งหมด — cache ไว้ในตัวแปร
+// ระดับสคริปต์กันเปิดซ้ำหลายรอบภายใน request เดียวกัน (เช่น getBoard_ อ่าน 3 ชีตต่อกัน เดิมเปิดสเปรดชีต
+// ใหม่ทุกครั้งที่อ่านแต่ละชีต) ค่านี้อยู่ได้แค่ชั่วอายุของ execution เดียวเป็นอย่างน้อย (Apps Script ไม่
+// การันตีว่าตัวแปร global จะข้าม request ได้ แต่ถ้าข้ามได้จริงก็ยิ่งได้กำไร ไม่มีข้อเสีย)
+var cachedSpreadsheet_ = null;
 function getSpreadsheet_() {
-  return SpreadsheetApp.openById(getSpreadsheetId_());
+  if (!cachedSpreadsheet_) {
+    cachedSpreadsheet_ = SpreadsheetApp.openById(getSpreadsheetId_());
+  }
+  return cachedSpreadsheet_;
 }
 
 function getLineChannelAccessToken_() {
