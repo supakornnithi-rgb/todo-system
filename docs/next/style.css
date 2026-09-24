@@ -238,8 +238,12 @@ main {
   padding: 12px 16px 0;
 }
 
+/* UX1: <560px ฟอร์มขึ้น 2 แถว (row1 = ช่องพิมพ์ + ปุ่ม +, row2 = เลือกวัน + เลือก project ครึ่งๆ)
+   ผ่าน flex-wrap + order (ควบคุมด้วย .row-break ที่บังคับตัดขึ้นบรรทัดใหม่) ตั้งแต่ 560px ขึ้นไปกลับมา
+   แถวเดียวเหมือนเดิม (ดู media query ท้ายไฟล์) */
 .capture-form {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 12px 12px;
   position: sticky;
@@ -249,7 +253,8 @@ main {
 }
 
 .capture-form input {
-  flex: 1;
+  order: 1;
+  flex: 1 1 160px;
   min-width: 0;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -264,9 +269,19 @@ main {
   border-color: var(--accent);
 }
 
-.capture-day-select {
-  flex-shrink: 0;
-  max-width: 76px;
+.capture-form .row-break {
+  order: 3;
+  flex-basis: 100%;
+  width: 0;
+  height: 0;
+}
+
+.capture-day-select,
+.capture-project-select {
+  order: 4;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: none;
   padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -275,12 +290,18 @@ main {
   color: var(--text-soft);
 }
 
-.capture-day-select:focus {
+.capture-project-select {
+  order: 5;
+}
+
+.capture-day-select:focus,
+.capture-project-select:focus {
   outline: none;
   border-color: var(--accent);
 }
 
 .capture-submit-btn {
+  order: 2;
   flex-shrink: 0;
   width: 36px;
   height: auto;
@@ -291,6 +312,28 @@ main {
   font-size: 20px;
   line-height: 1;
   cursor: pointer;
+}
+
+@media (min-width: 560px) {
+  .capture-form .row-break {
+    display: none;
+  }
+  .capture-form input {
+    order: 0;
+  }
+  /* จอกว้าง: ปุ่ม + อยู่ท้ายสุดหลังช่องเลือก (เหมือนเดิมก่อนมี project) */
+  .capture-submit-btn {
+    order: 9;
+  }
+  .capture-day-select,
+  .capture-project-select {
+    order: 0;
+    flex: 0 0 auto;
+    max-width: 76px;
+  }
+  .capture-project-select {
+    max-width: 120px;
+  }
 }
 
 .someday-form .capture-submit-btn {
@@ -869,12 +912,110 @@ main {
   border-color: var(--done);
 }
 
-@media (min-width: 560px) {
+/* UX1: below 1024px the week view is always a single column Mon->Sun (no more 2-col zigzag at >=560px) */
+
+/* ---------- UX1: 7-column week on desktop ---------- */
+@media (min-width: 1024px) {
+  body.view-week {
+    max-width: 1680px;
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  /* เฉพาะ #board ที่ขยายเต็มความกว้างใหม่ — ส่วนอื่นๆ (header, capture form, banner ต่างๆ, someday) ยังคง
+     ความกว้างเดิม 640px จัดกึ่งกลางเหมือนโหมดปกติ */
+  body.view-week > header,
+  body.view-week > .capture-form,
+  body.view-week .overdue-banner,
+  body.view-week .workload-section,
+  body.view-week .history-section,
+  body.view-week .project-filter,
+  body.view-week .week-nav,
+  body.view-week .today-jump,
+  body.view-week .someday-section {
+    max-width: 640px;
+    margin-inline: auto;
+  }
+
   .week-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px 16px;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 10px;
+    align-items: start;
   }
+
+  .week-grid--5 {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .week-grid .day-section {
+    min-height: 120px;
+  }
+}
+
+/* ---------- UX1: วันนี้ไฮไลต์ทั้งช่อง (ใช้ได้ทุกขนาดจอ ไม่ผูกกับ view-week) ---------- */
+.day-section.is-today {
+  background: var(--accent-soft);
+  border-radius: 12px;
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  padding: 6px;
+}
+
+.today-pill {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 1.6;
+}
+
+.day-heading.is-past {
+  opacity: .55;
+}
+
+/* ---------- UX1: ปุ่มบนการ์ดโผล่เฉพาะตอน hover/focus บนอุปกรณ์ที่ hover ได้จริง (เมาส์) — จอสัมผัสเหมือนเดิม ---------- */
+@media (hover: hover) and (pointer: fine) {
+  .task-card {
+    position: relative;
+  }
+
+  .task-card .task-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--surface);
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(45, 42, 38, 0.18);
+    padding: 2px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+  }
+
+  .task-card:hover .task-actions,
+  .task-card:focus-within .task-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* ---------- UX1: แถบพับ/กางงานที่เสร็จแล้วต่อวัน ---------- */
+.done-toggle {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 2px;
+  margin-top: 2px;
+  cursor: pointer;
 }
 
 /* ---------- L2P4: login overlay, logout button, test badge ---------- */
@@ -972,4 +1113,20 @@ main {
   font-size: 10.5px;
   font-weight: 700;
   box-shadow: var(--shadow);
+}
+
+/* UX1 (review): คอลัมน์ Week บนจอกว้างแคบ (~185px) — ย่อ handle ⠿ และระยะในการ์ด ให้ชื่องานได้พื้นที่มากขึ้น
+   (เฉพาะ ≥1024px ใน Week view เท่านั้น มือถือ/Today view ไม่กระทบ) */
+@media (min-width: 1024px) {
+  body.view-week .week-grid .task-card {
+    gap: 7px;
+    padding: 8px 8px 8px 8px;
+  }
+  body.view-week .week-grid .drag-handle {
+    width: 24px;
+    height: 28px;
+    font-size: 14px;
+    border-radius: 8px;
+    margin-top: -2px;
+  }
 }

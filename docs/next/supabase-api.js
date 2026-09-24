@@ -234,7 +234,7 @@
     var day = payload.day === 'someday' ? null : payload.day;
     return runQuery(
       sb.from('tasks').upsert(
-        { id: payload.tempId, workspace: payload.workspace, title: payload.title, project: '', day: day },
+        { id: payload.tempId, workspace: payload.workspace, title: payload.title, project: payload.project || '', day: day }, // UX1: project มาจาก capture form (dropdown หรือ #hashtag)
         { onConflict: 'id', ignoreDuplicates: true }
       )
     ).then(function (res) {

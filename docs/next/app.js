@@ -1,8 +1,9 @@
 // L2P4: เอา API_URL (Apps Script) ออก — ใช้ SUPABASE_URL/SUPABASE_PUBLISHABLE_KEY จาก config.js แทน
 // (ตั้งค่าอยู่ใน docs/next/config.js ที่โหลดก่อนไฟล์นี้)
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// UX1: ชื่อวัน/เดือนแบบไทยย่อ — ใช้ทั่วทั้งแอป (หัวข้อวัน, ตัวเลือกวันในฟอร์ม capture ฯลฯ)
+const DAY_NAMES = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
+const MONTH_NAMES = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
 // โทนสีสุภาพชุดเดียวกับธีมหลัก — แต่ละชื่อ project ได้สีคงที่ของตัวเองจากการ hash ชื่อ ไม่ต้องตั้งเอง
 // และไม่ต้องเก็บสีไว้ที่ backend (ชื่อเดิม = สีเดิมเสมอ ไม่ว่าจะเปิดจากเครื่องไหน)
@@ -97,9 +98,43 @@ function formatDayHeading(iso) {
 function formatWeekRange(weekStartIso) {
   var start = parseIso(weekStartIso);
   var end = parseIso(addDaysIso(weekStartIso, 6));
+  // UX1: สัปดาห์เดียวกัน (เดือนเดียวกัน) โชว์เดือนครั้งเดียวท้ายช่วง เช่น '21–27 ก.ย.'
+  // ข้ามเดือน โชว์เดือนของทั้งสองฝั่ง เช่น '29 ก.ย. – 5 ต.ค.'
+  if (start.getMonth() === end.getMonth()) {
+    return start.getDate() + '–' + end.getDate() + ' ' + MONTH_NAMES[end.getMonth()];
+  }
   var startStr = start.getDate() + ' ' + MONTH_NAMES[start.getMonth()];
   var endStr = end.getDate() + ' ' + MONTH_NAMES[end.getMonth()];
   return startStr + ' – ' + endStr;
+}
+
+// UX1 (pure, testable): แยก #project shortcut ออกจากชื่องาน — เจอ #token แรกที่แมตช์ชื่อ project ที่มีอยู่
+// จริง (เทียบแบบตัดช่องว่าง+ตัวพิมพ์เล็ก) เอาออกจากชื่อ ที่เหลือไม่แตะ (แม้จะมี # อื่นที่ไม่แมตช์ก็ตาม)
+function parseProjectHashtag(title, projectNames) {
+  var normMap = {};
+  (projectNames || []).forEach(function (name) {
+    normMap[name.toLowerCase().replace(/\s+/g, '')] = name;
+  });
+  var re = /#(\S+)/g;
+  var match;
+  while ((match = re.exec(title)) !== null) {
+    var norm = match[1].toLowerCase().replace(/\s+/g, '');
+    if (normMap.hasOwnProperty(norm)) {
+      var newTitle = (title.slice(0, match.index) + title.slice(match.index + match[0].length))
+        .replace(/\s+/g, ' ').trim();
+      return { title: newTitle, project: normMap[norm] };
+    }
+  }
+  return { title: title, project: null };
+}
+
+// UX1 (pure, testable): ตำแหน่ง reorder จากลิสต์เต็มของวันนั้น (รวม done ที่พับซ่อนอยู่) แทนลำดับการ์ด
+// ที่เห็นใน DOM จริงๆ — ต้องตรงกับวิธีที่ backend คำนวณ (setTaskOrder_ ใน Tasks.gs) เป๊ะ
+function computeReorderPosition(fullSortedTaskIds, draggedId, targetId, insertAfter) {
+  var ids = fullSortedTaskIds.filter(function (id) { return id !== draggedId; });
+  var idx = ids.indexOf(targetId);
+  if (idx === -1) return null;
+  return idx + 1 + (insertAfter ? 1 : 0);
 }
 
 // ---------- API ----------
@@ -362,6 +397,8 @@ var state = {
   board: null,
   projectFilter: null,
   expandedTasks: new Set(), // เก็บ id ของ task ที่กางดู subtask อยู่ (UI state ล้วนๆ ไม่ผูกกับ network)
+  // UX1: เก็บว่า "workspace|date" ไหนกางดู done tasks อยู่ — ไม่ persist, default พับเก็บเสมอตอนโหลดใหม่
+  expandedDoneDays: new Set(),
   workloadExpanded: false,
   historyExpanded: false,
   historyLoading: false,
@@ -446,6 +483,7 @@ function setLoading(active, label) {
 function refreshUI() {
   renderTabs();
   renderProjectFilter();
+  renderCaptureProjectOptions();
   renderOverdueBanner();
   renderWorkloadOverview();
   renderHistoryOverview();
@@ -473,6 +511,7 @@ function renderTabs() {
   });
 
   var isWeek = state.view === 'week';
+  document.body.classList.toggle('view-week', isWeek); // UX1: เปิดโหมดกว้างเต็มจอเฉพาะ Week view บนจอใหญ่
   document.getElementById('week-nav').hidden = !isWeek;
   var isCurrentWeek = state.weekStart === mondayOf(todayIso());
   document.getElementById('today-jump').hidden = !(isWeek && !isCurrentWeek);
@@ -772,7 +811,6 @@ function onReorderEnd() {
   document.removeEventListener('pointercancel', onReorderEnd);
 
   var sourceCard = reorderDrag.sourceCard;
-  var sourceSection = reorderDrag.sourceSection;
   var targetCard = reorderDrag.lastTarget;
   var insertAfter = reorderDrag.insertAfter;
   var task = reorderDrag.task;
@@ -784,14 +822,15 @@ function onReorderEnd() {
   if (targetCard) targetCard.classList.remove('reorder-before', 'reorder-after');
   if (!targetCard) return; // ปล่อยนอกการ์ด/นอกวันเดิม ถือว่ายกเลิก ไม่มีอะไรเปลี่ยน
 
-  // หาตำแหน่งจากลำดับการ์ดจริงใน DOM ตอนนี้ (ไม่นับการ์ดต้นทางที่กำลังลากอยู่ — ตรงกับที่ backend คำนวณ)
-  var list = sourceSection.querySelector('.task-list');
-  var domCards = Array.from(list.children).filter(function (c) {
-    return c.classList.contains('task-card') && c !== sourceCard;
-  });
-  var targetIdx = domCards.indexOf(targetCard);
-  if (targetIdx === -1) return;
-  var position = targetIdx + 1 + (insertAfter ? 1 : 0);
+  // UX1: หาตำแหน่งจากลิสต์เต็มของวันนั้นใน state.board (ไม่ใช่ลำดับการ์ดใน DOM) — done tasks ที่พับซ่อน
+  // อยู่ไม่มีการ์ดใน DOM เลย นับ index จาก DOM แบบเดิมจะเพี้ยนทันทีที่มี done ซ่อนอยู่ในวันนั้น
+  var targetTaskId = targetCard.dataset.id;
+  if (!targetTaskId) return;
+  var dayObj = state.board && state.board.days.find(function (d) { return d.date === task.day; });
+  if (!dayObj) return;
+  var fullIds = dayObj.tasks.map(function (t) { return t.id; }); // เรียงตาม order อยู่แล้ว (ตรงกับที่ UI ใช้)
+  var position = computeReorderPosition(fullIds, task.id, targetTaskId, insertAfter);
+  if (position === null) return;
 
   reorderTaskLocal(task.id, task.day, position);
   refreshUI();
@@ -801,6 +840,7 @@ function onReorderEnd() {
 function taskCardEl(task, opts) {
   var card = document.createElement('div');
   card.className = 'task-card' + (task.done ? ' done' : '');
+  card.dataset.id = task.id; // UX1: ให้ onReorderEnd หาตำแหน่งจาก id แทน DOM index (ใช้ได้แม้ done ถูกซ่อนอยู่)
 
   var check = document.createElement('button');
   check.className = 'task-check';
@@ -923,30 +963,64 @@ function taskCardEl(task, opts) {
 }
 
 function daySectionEl(date, tasks, isToday) {
+  // UX1: วันที่ผ่านมาแล้ว (ก่อน today ของบอร์ด) หัวข้อจางลง — การ์ดข้างในไม่โดนจาง
+  var isPast = !!(state.board && date < state.board.today);
+
   var section = document.createElement('div');
-  section.className = 'day-section';
+  section.className = 'day-section' + (isToday ? ' is-today' : '');
   section.dataset.date = date;
 
   var heading = document.createElement('p');
-  heading.className = 'day-heading' + (isToday ? ' is-today' : '');
+  heading.className = 'day-heading' + (isToday ? ' is-today' : '') + (isPast ? ' is-past' : '');
   if (isToday) {
     var dot = document.createElement('span');
     dot.className = 'dot';
     heading.appendChild(dot);
   }
   heading.appendChild(document.createTextNode(formatDayHeading(date)));
+  if (isToday) {
+    var pill = document.createElement('span');
+    pill.className = 'today-pill';
+    pill.textContent = 'วันนี้';
+    heading.appendChild(pill);
+  }
   section.appendChild(heading);
 
   var list = document.createElement('div');
   list.className = 'task-list';
+
+  // UX1: แยกงานที่เสร็จแล้วออกไปพับเก็บต่างหาก (ลิสต์ tasks ที่รับมาเรียงตาม order อยู่แล้ว รักษาลำดับ
+  // เดิมไว้ในแต่ละกลุ่ม) — ใช้ได้ทั้งมุมมอง Today และ Week เพราะเรียก daySectionEl ร่วมกัน
+  var openTasks = tasks.filter(function (t) { return !t.done; });
+  var doneTasks = tasks.filter(function (t) { return t.done; });
+
   if (tasks.length === 0) {
     var hint = document.createElement('p');
     hint.className = 'empty-hint';
     hint.textContent = 'ยังไม่มีงาน';
     list.appendChild(hint);
   } else {
-    tasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
+    openTasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
   }
+
+  if (doneTasks.length > 0) {
+    var expandKey = state.workspace + '|' + date;
+    var expanded = state.expandedDoneDays.has(expandKey);
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'done-toggle';
+    toggle.textContent = '✓ เสร็จแล้ว ' + doneTasks.length + ' งาน ' + (expanded ? '▾' : '▸');
+    toggle.addEventListener('click', function () {
+      if (expanded) state.expandedDoneDays.delete(expandKey);
+      else state.expandedDoneDays.add(expandKey);
+      refreshUI();
+    });
+    list.appendChild(toggle);
+    if (expanded) {
+      doneTasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
+    }
+  }
+
   section.appendChild(list);
   return section;
 }
@@ -972,7 +1046,7 @@ function renderBoard() {
     }
   } else {
     var grid = document.createElement('div');
-    grid.className = 'week-grid';
+    grid.className = 'week-grid' + (weekdaysOnly ? ' week-grid--5' : ''); // UX1: Office เห็นแค่ จ-ศ ให้กริด 5 คอลัมน์
     state.board.days.forEach(function (d) {
       if (weekdaysOnly && isWeekend(d.date)) return; // Office ไม่มีวันเสาร์-อาทิตย์ให้โชว์
       grid.appendChild(daySectionEl(d.date, filterTasks(d.tasks), d.date === state.board.today));
@@ -1015,6 +1089,7 @@ function renderProjectFilter() {
   allBtn.addEventListener('click', function () {
     state.projectFilter = null;
     renderProjectFilter();
+    renderCaptureProjectOptions();
     renderBoard();
     renderSomeday();
   });
@@ -1032,11 +1107,43 @@ function renderProjectFilter() {
     btn.addEventListener('click', function () {
       state.projectFilter = name;
       renderProjectFilter();
+      renderCaptureProjectOptions();
       renderBoard();
       renderSomeday();
     });
     el.appendChild(btn);
   });
+}
+
+// ---------- UX1: project picker ตอนเพิ่มงานใหม่ (capture form) ----------
+// ตัวเลือก = 'ไม่มี project' + state.board.projects ตามลำดับ พรีเซตค่า project ล่าสุดที่ใช้ต่อ workspace
+// (เก็บใน localStorage) แต่ถ้าผู้ใช้เลือกค่าอื่นค้างอยู่แล้วจากการ render ครั้งก่อน (ยังอยู่ในลิสต์จริง)
+// ให้คงค่านั้นไว้ ไม่ดึงกลับไปเป็นค่า default ทุกครั้งที่ re-render
+function renderCaptureProjectOptions() {
+  var select = document.getElementById('capture-project');
+  if (!select) return;
+  var projects = (state.board && state.board.projects) || [];
+  var prevValue = select.value;
+  var keepPrev = prevValue !== '' && projects.indexOf(prevValue) !== -1;
+
+  select.innerHTML = '';
+  var noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = 'ไม่มี project';
+  select.appendChild(noneOpt);
+  projects.forEach(function (name) {
+    var opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+
+  if (keepPrev) {
+    select.value = prevValue;
+    return;
+  }
+  var stored = localStorage.getItem(STORAGE_PREFIX + 'last_project_' + state.workspace);
+  select.value = (stored && projects.indexOf(stored) !== -1) ? stored : '';
 }
 
 // ---------- ภาพรวมงานค้างต่อ project (สัดส่วนงานยังไม่เสร็จของสัปดาห์ที่กำลังดูอยู่ + someday) ----------
@@ -1641,6 +1748,7 @@ document.getElementById('workspace-tabs').addEventListener('click', function (e)
   state.historyExpanded = false;
   localStorage.setItem(STORAGE_PREFIX + 'workspace', state.workspace); // L2P4: ts2_ prefix
   renderCaptureDayOptions(); // Office เลือกได้แค่ จ-ศ ต้องคำนวณตัวเลือกใหม่ทุกครั้งที่สลับ workspace
+  renderCaptureProjectOptions(); // UX1: project เป็นคนละชุดต่อ workspace ต้องรีเซ็ต/พรีเซตค่าล่าสุดใหม่ด้วย
   tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
   loadBoard();
   renderTabs();
@@ -1672,20 +1780,36 @@ document.getElementById('capture-form').addEventListener('submit', function (e) 
   e.preventDefault();
   var input = document.getElementById('capture-input');
   var daySelect = document.getElementById('capture-day');
-  var title = input.value.trim();
-  if (!title) return;
+  var projectSelect = document.getElementById('capture-project');
+  var rawTitle = input.value.trim();
+  if (!rawTitle) return;
   var day = daySelect.value || todayIso();
+
+  // UX1: #token ที่แมตช์ชื่อ project ที่มีอยู่จริงชนะค่าที่เลือกจาก dropdown เสมอ — ถ้าไม่แมตช์อะไรเลย
+  // ใช้ค่าจาก dropdown ตามปกติ
+  var selectedProject = projectSelect ? projectSelect.value : '';
+  var projectNames = (state.board && state.board.projects) || [];
+  var parsed = parseProjectHashtag(rawTitle, projectNames);
+  var title = parsed.title;
+  var project = parsed.project !== null ? parsed.project : selectedProject;
+  // พิมพ์แค่ "#kopor" อย่างเดียว ตัด tag ออกแล้วชื่อจะว่าง (DB ไม่รับ title ว่าง) — คงข้อความเดิมไว้แทน
+  if (!title) title = rawTitle;
+
   input.value = '';
   renderCaptureDayOptions(); // รีเซ็ตกลับเป็นวันนี้ให้ครั้งถัดไป ไม่ค้างวันที่เพิ่งเลือก
 
+  // UX1: เก็บค่าที่ "เลือกจาก dropdown" เป็นค่า default ครั้งถัดไปของ workspace นี้เสมอ — ไม่ใช่ค่าที่แมตช์
+  // จาก hashtag (คนละความตั้งใจกัน hashtag คือทางลัดเฉพาะงานนี้ครั้งเดียว)
+  try { localStorage.setItem(STORAGE_PREFIX + 'last_project_' + state.workspace, selectedProject); } catch (err) {}
+
   var tempId = crypto.randomUUID(); // L2P4: UUID จริงแทน tmp_<ts>_<rand> — เป็น id จริงถาวร ไม่ต้องสลับทีหลัง
   insertTaskLocal({
-    id: tempId, workspace: state.workspace, title: title, project: '', day: day,
+    id: tempId, workspace: state.workspace, title: title, project: project, day: day,
     weekStart: (day === 'someday') ? '' : mondayOf(day), done: false,
     createdAt: new Date().toISOString(), completedAt: '', order: 999999, subtasks: []
   });
   refreshUI();
-  queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: day, tempId: tempId });
+  queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: day, tempId: tempId, project: project });
 });
 
 document.getElementById('someday-form').addEventListener('submit', function (e) {

@@ -7,3 +7,6 @@ HANDOFF.md
 
 # ไฟล์ทำงานระหว่างโมเดล (plan-relay) — ภายในเท่านั้น
 relay/
+
+# Supabase CLI local state
+supabase/.temp/

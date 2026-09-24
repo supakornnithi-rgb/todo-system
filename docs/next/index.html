@@ -29,9 +29,12 @@
   </header>
 
   <form class="capture-form" id="capture-form">
-    <input type="text" id="capture-input" placeholder="พิมพ์งานแล้วกด Enter…" autocomplete="off">
-    <select id="capture-day" class="capture-day-select" aria-label="เลือกวัน"></select>
+    <input type="text" id="capture-input" placeholder="พิมพ์งานแล้วกด Enter… (ใช้ #project ได้)" autocomplete="off">
     <button type="submit" class="capture-submit-btn" aria-label="เพิ่มงาน">+</button>
+    <!-- UX1: ตัวคั่นแถวสำหรับ layout 2 แถวบนจอแคบ (<560px) — ไม่มีผลที่ ≥560px (ดู style.css) -->
+    <span class="row-break" aria-hidden="true"></span>
+    <select id="capture-day" class="capture-day-select" aria-label="เลือกวัน"></select>
+    <select id="capture-project" class="capture-project-select" aria-label="เลือก project"></select>
   </form>
 
   <main>
