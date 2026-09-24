@@ -4,3 +4,6 @@ Thumbs.db
 
 # มี Spreadsheet ID / Web App URL / รายละเอียดภายในโปรเจกต์ — ไม่ต้องการให้อยู่ใน repo สาธารณะ
 HANDOFF.md
+
+# ไฟล์ทำงานระหว่างโมเดล (plan-relay) — ภายในเท่านั้น
+relay/

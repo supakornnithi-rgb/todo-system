@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>todo-system</title>
+  <meta name="theme-color" content="#5b8a72">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="loading-bar" id="loading-bar"></div>
+  <header>
+    <div class="header-row">
+      <p class="app-title">todo-system</p>
+      <button class="dreams-btn" id="dreams-btn" type="button">🌟 TRUE DREAM</button>
+    </div>
+    <p class="status-line" id="status-line" hidden></p>
+    <div class="tabs" id="workspace-tabs">
+      <button class="tab-btn active" data-workspace="Personal">Personal</button>
+      <button class="tab-btn" data-workspace="Office">Office</button>
+    </div>
+    <div class="tabs view-tabs" id="view-tabs">
+      <button class="tab-btn active" data-view="today">วันนี้</button>
+      <button class="tab-btn" data-view="week">สัปดาห์</button>
+    </div>
+  </header>
+
+  <form class="capture-form" id="capture-form">
+    <input type="text" id="capture-input" placeholder="พิมพ์งานแล้วกด Enter…" autocomplete="off">
+    <select id="capture-day" class="capture-day-select" aria-label="เลือกวัน"></select>
+    <button type="submit" class="capture-submit-btn" aria-label="เพิ่มงาน">+</button>
+  </form>
+
+  <main>
+    <div class="overdue-banner" id="overdue-banner" hidden></div>
+    <div class="workload-section" id="workload-section"></div>
+    <div class="history-section" id="history-section"></div>
+    <div class="project-filter" id="project-filter" hidden></div>
+    <div class="week-nav" id="week-nav" hidden>
+      <button class="icon-btn" id="week-prev" aria-label="สัปดาห์ก่อนหน้า">‹</button>
+      <span class="range" id="week-range"></span>
+      <button class="icon-btn" id="week-next" aria-label="สัปดาห์ถัดไป">›</button>
+    </div>
+    <button class="today-jump" id="today-jump" hidden>กลับไปสัปดาห์นี้</button>
+
+    <div id="board"></div>
+
+    <div class="someday-section">
+      <p class="someday-heading">Someday / Note</p>
+      <form class="someday-form" id="someday-form">
+        <input type="text" id="someday-input" placeholder="งานไม่รีบ ไม่ผูกวัน…" autocomplete="off">
+        <button type="submit" class="capture-submit-btn" aria-label="เพิ่มงาน">+</button>
+      </form>
+      <div class="task-list" id="someday-list"></div>
+    </div>
+  </main>
+
+  <button class="logout-btn" id="logout-btn" type="button" hidden>ออกจากระบบ</button>
+
+  <div class="toast" id="toast"></div>
+  <div class="queue-status" id="queue-status" hidden></div>
+
+  <!-- L2P4: overlay login เต็มจอ — บล็อกไม่ให้เห็น/ใช้แอปจนกว่าจะมี session (ดู app.js ท้ายไฟล์) -->
+  <div class="login-overlay" id="login-overlay" hidden>
+    <form class="login-card" id="login-form">
+      <p class="login-title">todo-system</p>
+      <input type="email" id="login-email" placeholder="อีเมล" autocomplete="username" required>
+      <input type="password" id="login-password" placeholder="รหัสผ่าน" autocomplete="current-password" required>
+      <p class="login-error" id="login-error"></p>
+      <button type="submit" id="login-submit">เข้าสู่ระบบ</button>
+    </form>
+  </div>
+
+  <!-- L2P4: badge บอกว่านี่คือเวอร์ชันทดสอบ (Supabase) — โชว์เฉพาะตอนรันใต้ /next/ ดู config.js -->
+  <div class="test-badge" id="test-badge" hidden>เวอร์ชันทดสอบ (Supabase)</div>
+
+  <script src="vendor/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="supabase-api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
