@@ -58,9 +58,28 @@
     </div>
   </main>
 
+  <button class="logout-btn" id="logout-btn" type="button" hidden>ออกจากระบบ</button>
+
   <div class="toast" id="toast"></div>
   <div class="queue-status" id="queue-status" hidden></div>
 
+  <!-- L2P4: overlay login เต็มจอ — บล็อกไม่ให้เห็น/ใช้แอปจนกว่าจะมี session (ดู app.js ท้ายไฟล์) -->
+  <div class="login-overlay" id="login-overlay" hidden>
+    <form class="login-card" id="login-form">
+      <p class="login-title">todo-system</p>
+      <input type="email" id="login-email" placeholder="อีเมล" autocomplete="username" required>
+      <input type="password" id="login-password" placeholder="รหัสผ่าน" autocomplete="current-password" required>
+      <p class="login-error" id="login-error"></p>
+      <button type="submit" id="login-submit">เข้าสู่ระบบ</button>
+    </form>
+  </div>
+
+  <!-- L2P4: badge บอกว่านี่คือเวอร์ชันทดสอบ (Supabase) — โชว์เฉพาะตอนรันใต้ /next/ ดู config.js -->
+  <div class="test-badge" id="test-badge" hidden>เวอร์ชันทดสอบ (Supabase)</div>
+
+  <script src="vendor/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="supabase-api.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

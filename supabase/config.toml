@@ -1,0 +1,6 @@
+# line-webhook รับ request ตรงจาก LINE Platform ซึ่งไม่มีทาง (และไม่ควร) ส่ง Supabase JWT มาด้วย
+# ความปลอดภัยของฟังก์ชันนี้มาจากการตรวจ X-Line-Signature เองข้างใน index.ts แทน (HMAC-SHA256 ด้วย
+# LINE_CHANNEL_SECRET) จึงต้องปิด verify_jwt ไว้ ไม่งั้น Supabase จะปฏิเสธ request ของ LINE ทุกอันด้วย 401
+# ก่อนที่โค้ดข้างในจะได้ตรวจลายเซ็นเองเลยด้วยซ้ำ
+[functions.line-webhook]
+verify_jwt = false

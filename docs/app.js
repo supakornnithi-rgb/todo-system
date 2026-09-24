@@ -1,6 +1,5 @@
-// ตั้งค่า URL ของ Apps Script Web App ตรงนี้จุดเดียว — ไม่ใช่ความลับ (เห็นได้จาก network tab อยู่แล้ว
-// เพราะเป็นเว็บ static ล้วนๆ ไม่มี backend server มาซ่อนให้) แค่รวมไว้ที่เดียวให้แก้ง่ายเวลา deploy ใหม่
-const API_URL = 'https://script.google.com/macros/s/AKfycbx5hw8L7HkglAbqxWlSWWkJ6tAF8tXMKD5CrVt-iw6RXqDlYXZSlDmvsKmIbWJIeEz3/exec';
+// L2P4: เอา API_URL (Apps Script) ออก — ใช้ SUPABASE_URL/SUPABASE_PUBLISHABLE_KEY จาก config.js แทน
+// (ตั้งค่าอยู่ใน docs/next/config.js ที่โหลดก่อนไฟล์นี้)
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -104,56 +103,31 @@ function formatWeekRange(weekStartIso) {
 }
 
 // ---------- API ----------
-// หมายเหตุ: บางครั้ง (มักเป็นตอนเปิดแอปครั้งแรกในเบราว์เซอร์ session ใหม่) Google จะตอบหน้า HTML
-// เช็คความปลอดภัยกลับมาแทน JSON ในการยิง request ครั้งแรกสุด แล้วครั้งถัดไปจะปกติทันที — เป็นพฤติกรรม
-// ที่รู้กันของ Apps Script Web App ไม่ใช่ error จริง จึง parse แบบปลอดภัย (ไม่ throw จาก .json() ตรงๆ)
-// แล้วให้ apiGet retry เองอัตโนมัติได้ (อ่านอย่างเดียว ปลอดภัย) ส่วน apiPost ไม่ retry เอง
-// (กันเขียนซ้ำซ้อน) แต่แจ้ง error ชัดเจนให้ผู้ใช้กดใหม่เอง
-function safeParseJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    return null;
-  }
-}
-
+// L2P4: apiGet/apiPost ไม่ยิง fetch เองตรงๆ อีกต่อไป — ห่อ sbApiGet/sbApiPost (docs/next/supabase-api.js)
+// แทน คงชื่อฟังก์ชันเดิมไว้ตรงๆ เพื่อไม่ต้องแก้จุดเรียกใช้ที่เหลือทั้งไฟล์เลย ตัด HTML-interstitial retry
+// (safeParseJson) ออกเพราะเป็นพฤติกรรมเฉพาะของ Apps Script Web App เท่านั้น ไม่เกี่ยวกับ Supabase
+// แต่ยังคง "retry รอบเดียวตอนเน็ตหลุดสำหรับ read" ไว้เหมือนเดิม (adapter throw เมื่อเจอ network error จริง)
 function apiGet(params, retriesLeft) {
   if (retriesLeft === undefined) retriesLeft = 2;
-  var qs = new URLSearchParams(params).toString();
-  return fetch(API_URL + '?' + qs)
-    .then(function (r) { return r.text(); })
-    .then(function (text) {
-      var json = safeParseJson(text);
-      if (json) return json;
-      if (retriesLeft > 0) {
-        return new Promise(function (resolve) { setTimeout(resolve, 500); })
-          .then(function () { return apiGet(params, retriesLeft - 1); });
-      }
-      throw new Error('เชื่อมต่อ Apps Script ไม่สำเร็จ ลองรีเฟรชหน้าใหม่อีกครั้ง');
-    });
+  return sbApiGet(params).catch(function (err) {
+    if (retriesLeft > 0) {
+      return new Promise(function (resolve) { setTimeout(resolve, 500); })
+        .then(function () { return apiGet(params, retriesLeft - 1); });
+    }
+    throw err;
+  });
 }
 
+// L2P4: apiPost ไม่ retry เอง (กันเขียนซ้ำซ้อน) เหมือนพฤติกรรมเดิม — ห่อ sbApiPost ตรงๆ
 function apiPost(action, payload) {
-  var body = Object.assign({ action: action }, payload);
-  // ใช้ text/plain แทน application/json เพื่อเลี่ยง CORS preflight (Apps Script Web App ตอบ OPTIONS ไม่ได้)
-  return fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body)
-  })
-    .then(function (r) { return r.text(); })
-    .then(function (text) {
-      var json = safeParseJson(text);
-      if (json) return json;
-      throw new Error('เชื่อมต่อไม่สำเร็จ ลองกดใหม่อีกครั้ง');
-    });
+  return sbApiPost(action, payload);
 }
 // ---------- write queue: optimistic + debounce + merge + retry with backoff + persistence ----------
 // หลักการ: UI อัปเดตทันทีเสมอ (optimistic) โดยไม่รอ network เลย ส่วนการยิงจริงไป Apps Script จะถูก
 // "รวบ" ต่อ key (เช่น task:<id>) รอเงียบ 600ms ก่อนค่อยส่ง ถ้ามีการแก้ field เดิมซ้ำในช่วงรอ จะ merge
 // เป็น POST เดียว ไม่ยิงซ้ำทุกครั้งที่กด — ลด request จริงลงเยอะโดยผู้ใช้ไม่รู้สึกหน่วงเลยเพราะจอ
 // เปลี่ยนทันทีอยู่แล้ว ณ ตอนกด
-var QUEUE_STORAGE_KEY = 'ts_write_queue';
+var QUEUE_STORAGE_KEY = STORAGE_PREFIX + 'write_queue'; // L2P4: prefix ts2_ กันชนกับ ts_ ของแอปเดิมที่ origin เดียวกัน
 var QUEUE_DEBOUNCE_MS = 600;
 var QUEUE_RETRY_BASE_MS = 2000;
 var QUEUE_RETRY_MAX_MS = 15000;
@@ -382,8 +356,8 @@ window.addEventListener('online', flushAll);
 
 // ---------- state ----------
 var state = {
-  workspace: localStorage.getItem('ts_workspace') || 'Personal',
-  view: localStorage.getItem('ts_view') || 'today',
+  workspace: localStorage.getItem(STORAGE_PREFIX + 'workspace') || 'Personal', // L2P4: ts2_ prefix
+  view: localStorage.getItem(STORAGE_PREFIX + 'view') || 'today', // L2P4: ts2_ prefix
   weekStart: mondayOf(todayIso()),
   board: null,
   projectFilter: null,
@@ -560,7 +534,8 @@ function subtaskBoxEl(task) {
       });
       upsertTaskLocal(Object.assign({}, task, { subtasks: updatedSubtasks }));
       refreshUI();
-      queueOp(newOpKey('togglesub'), 'toggleSubtaskDone', { id: s.id });
+      // L2P4: ส่ง done ที่คำนวณแล้วตรงๆ (set ไม่ใช่ toggle) กันทำสองครั้งพลาดกลับค่าเดิม
+      queueOp(newOpKey('togglesub'), 'toggleSubtaskDone', { id: s.id, done: !s.done });
     });
 
     var sTitle = document.createElement('span');
@@ -582,7 +557,7 @@ function subtaskBoxEl(task) {
     var subTitle = input.value.trim();
     if (!subTitle) return;
     input.value = '';
-    var tempSubId = 'tmp_st_' + Date.now();
+    var tempSubId = crypto.randomUUID(); // L2P4: UUID จริงแทน tmp_st_ — ใช้เป็น id จริงได้เลย ไม่ต้องสลับทีหลัง
     var updatedTask = Object.assign({}, task, {
       subtasks: (task.subtasks || []).concat([{
         id: tempSubId, taskId: task.id, title: subTitle, done: false, createdAt: new Date().toISOString()
@@ -590,7 +565,8 @@ function subtaskBoxEl(task) {
     });
     upsertTaskLocal(updatedTask);
     refreshUI();
-    queueOp(newOpKey('addsub'), 'addSubtask', { taskId: task.id, title: subTitle });
+    // L2P4: ส่ง id (=tempSubId) ไปด้วย ให้ adapter upsert แบบ idempotent ได้ (เดิมไม่เคยส่ง id ของ subtask)
+    queueOp(newOpKey('addsub'), 'addSubtask', { taskId: task.id, title: subTitle, id: tempSubId });
   });
   box.appendChild(form);
 
@@ -1427,7 +1403,8 @@ function dreamRowEl(dream) {
     }
     renderDreamsPanel();
     if (nowDone) showToast('🎉 ยินดีด้วย! ความฝันข้อนี้เป็นจริงแล้ว');
-    queueOp(newOpKey('toggledream'), 'toggleDreamDone', { id: dream.id });
+    // L2P4: ส่ง done ที่คำนวณแล้วตรงๆ (set ไม่ใช่ toggle)
+    queueOp(newOpKey('toggledream'), 'toggleDreamDone', { id: dream.id, done: nowDone });
   });
   row.appendChild(check);
 
@@ -1485,7 +1462,7 @@ function renderDreamsPanel() {
       var title = input.value.trim();
       if (!title) return;
       input.value = '';
-      var tempId = 'tmp_dream_' + Date.now();
+      var tempId = crypto.randomUUID(); // L2P4: UUID จริงแทน tmp_dream_
       state.dreamsData.push({ id: tempId, title: title, done: false, completedAt: '', createdAt: new Date().toISOString() });
       renderDreamsPanel();
       queueOp(newOpKey('adddream'), 'addDream', { title: title, tempId: tempId });
@@ -1514,12 +1491,13 @@ function closeDreamsPanel() {
 // เก็บบอร์ดล่าสุดของแต่ละ workspace ไว้ใน localStorage — ใช้โชว์ทันทีตอนเปิดแอป/สลับ workspace
 // ระหว่างรอข้อมูลสดจริงจาก network (รู้สึกเร็วขึ้นมาก แม้ network เองจะช้าเท่าเดิมก็ตาม)
 function cacheBoard(board) {
-  try { localStorage.setItem('ts_cache_' + board.workspace, JSON.stringify(board)); } catch (e) {}
+  // L2P4: ts2_ prefix กันชนกับ ts_cache_<workspace> ของแอปเดิมที่ origin เดียวกัน
+  try { localStorage.setItem(STORAGE_PREFIX + 'cache_' + board.workspace, JSON.stringify(board)); } catch (e) {}
 }
 
 function tryRenderFromCache(workspace) {
   try {
-    var raw = localStorage.getItem('ts_cache_' + workspace);
+    var raw = localStorage.getItem(STORAGE_PREFIX + 'cache_' + workspace); // L2P4: ts2_ prefix
     if (!raw) return;
     state.board = JSON.parse(raw);
     refreshUI();
@@ -1549,7 +1527,7 @@ function loadBoard() {
 // ---------- polling: เช็คข้อมูลใหม่จาก server เป็นระยะ ไม่ต้องรอผู้ใช้กดอะไรเอง ----------
 // เทียบลายเซ็น JSON ก่อนเสมอ ไม่ re-render ถ้าไม่มีอะไรเปลี่ยนจริง (กันจอกระพริบ/เปลืองแรงเปล่าๆ)
 // และตอน merge ต้อง "ป้องกัน" ไม่ให้ข้อมูลเก่าจาก server ทับสิ่งที่เรากำลังแก้/ลบ/เพิ่มค้างอยู่ในคิว
-var POLL_INTERVAL_MS = 4500;
+var POLL_INTERVAL_MS = 60000; // L2P4: เดิม 4500ms — ตอนนี้ Realtime เป็นตัวหลัก อันนี้เหลือไว้เป็น safety net เฉยๆ
 var lastBoardSignature = null;
 
 function boardSignature(board) {
@@ -1644,8 +1622,11 @@ function pollBoard() {
     .catch(function () { /* poll เงียบๆ พังไม่ต้องแจ้งเตือนรบกวน ลองใหม่รอบถัดไปเอง */ });
 }
 
+// L2P4: กันตั้ง interval ซ้อน — bootApp() อาจถูกเรียกอีกรอบหลังออกจากระบบแล้ว login ใหม่
+var pollingTimer = null;
 function startPolling() {
-  setInterval(pollBoard, POLL_INTERVAL_MS);
+  if (pollingTimer) return;
+  pollingTimer = setInterval(pollBoard, POLL_INTERVAL_MS);
 }
 
 document.getElementById('dreams-btn').addEventListener('click', openDreamsPanel);
@@ -1658,7 +1639,7 @@ document.getElementById('workspace-tabs').addEventListener('click', function (e)
   state.projectFilter = null; // project คนละชุดกันต่อ workspace เลยรีเซ็ต filter ทุกครั้งที่สลับ
   state.historyData = null; // ประวัติเป็นของแต่ละ workspace แยกกัน ต้องโหลดใหม่ตอนสลับ
   state.historyExpanded = false;
-  localStorage.setItem('ts_workspace', state.workspace);
+  localStorage.setItem(STORAGE_PREFIX + 'workspace', state.workspace); // L2P4: ts2_ prefix
   renderCaptureDayOptions(); // Office เลือกได้แค่ จ-ศ ต้องคำนวณตัวเลือกใหม่ทุกครั้งที่สลับ workspace
   tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
   loadBoard();
@@ -1669,7 +1650,7 @@ document.getElementById('view-tabs').addEventListener('click', function (e) {
   var btn = e.target.closest('.tab-btn');
   if (!btn) return;
   state.view = btn.dataset.view;
-  localStorage.setItem('ts_view', state.view);
+  localStorage.setItem(STORAGE_PREFIX + 'view', state.view); // L2P4: ts2_ prefix
   renderTabs();
   renderBoard();
 });
@@ -1697,7 +1678,7 @@ document.getElementById('capture-form').addEventListener('submit', function (e) 
   input.value = '';
   renderCaptureDayOptions(); // รีเซ็ตกลับเป็นวันนี้ให้ครั้งถัดไป ไม่ค้างวันที่เพิ่งเลือก
 
-  var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  var tempId = crypto.randomUUID(); // L2P4: UUID จริงแทน tmp_<ts>_<rand> — เป็น id จริงถาวร ไม่ต้องสลับทีหลัง
   insertTaskLocal({
     id: tempId, workspace: state.workspace, title: title, project: '', day: day,
     weekStart: (day === 'someday') ? '' : mondayOf(day), done: false,
@@ -1714,7 +1695,7 @@ document.getElementById('someday-form').addEventListener('submit', function (e) 
   if (!title) return;
   input.value = '';
 
-  var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  var tempId = crypto.randomUUID(); // L2P4: UUID จริงแทน tmp_<ts>_<rand>
   insertTaskLocal({
     id: tempId, workspace: state.workspace, title: title, project: '', day: 'someday',
     weekStart: '', done: false, createdAt: new Date().toISOString(), completedAt: '', order: 0, subtasks: []
@@ -1723,15 +1704,121 @@ document.getElementById('someday-form').addEventListener('submit', function (e) 
   queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: 'someday', tempId: tempId });
 });
 
+// ---------- L2P4: login gate + realtime ----------
+// booted กันบูตซ้ำ (ข้อ 4c.6 ของแผน — "boots exactly once, guard against double boot") เผื่อ sbGetSession()
+// กับ auth state change ยิงมาทับเวลากัน
+var booted = false;
+var realtimeUnsubscribe = null;
+var realtimeDebounceTimer = null;
+
+function showLoginOverlay() {
+  var el = document.getElementById('login-overlay');
+  if (el) el.hidden = false;
+}
+function hideLoginOverlay() {
+  var el = document.getElementById('login-overlay');
+  if (el) el.hidden = true;
+}
+
+// L2P4: debounce 400ms ก่อนสั่ง pollBoard() จริง กัน event ถี่ๆ จาก Realtime (เช่นลาก reorder หลายแถวรวด)
+// ยิง pollBoard() รัวเกินจำเป็น — pollBoard เองก็เทียบ signature อีกชั้นก่อน re-render อยู่แล้ว
+function debouncedPollBoard() {
+  clearTimeout(realtimeDebounceTimer);
+  realtimeDebounceTimer = setTimeout(pollBoard, 400);
+}
+
+function bootApp() {
+  if (booted) return;
+  booted = true;
+  renderCaptureDayOptions();
+  loadQueueFromStorage(); // งานที่ยังไม่ได้ส่งจากรอบก่อน (ปิดหน้าไปตอนกำลังส่งอยู่) ค้างไว้ใน localStorage
+  tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
+  loadBoard().then(function () {
+    // L2P4: subscribe Realtime หลัง boot สำเร็จรอบแรก แทนที่การ poll ถี่ทุก 4.5 วิแบบเดิม
+    if (!realtimeUnsubscribe) realtimeUnsubscribe = sbSubscribeChanges(debouncedPollBoard);
+  });
+  flushAll(); // ส่งของที่ค้างจากรอบก่อนต่อทันที
+  startPolling(); // ยังคง poll ทุก 60 วิเป็น safety net เผื่อ Realtime หลุด/พลาด event
+}
+
+// L2P4: ฟอร์ม login — ต้องมีปุ่ม submit จริง (ไม่งั้น Enter/Go บนมือถือกดไม่ทำงานเมื่อฟอร์มมีมากกว่า 1 ช่อง)
+var loginForm = document.getElementById('login-form');
+if (loginForm) {
+  loginForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var email = document.getElementById('login-email').value.trim();
+    var password = document.getElementById('login-password').value;
+    var errEl = document.getElementById('login-error');
+    var btn = document.getElementById('login-submit');
+    errEl.textContent = '';
+    btn.disabled = true;
+    sbSignIn(email, password)
+      .then(function (res) {
+        btn.disabled = false;
+        if (res.error) {
+          // AuthRetryableFetchError (หรือไม่มี status เลย) = เน็ตหลุด/ต่อ Supabase ไม่ได้จริงๆ
+          // ส่วน error อื่น (เช่น 400 invalid_credentials) = อีเมล/รหัสผ่านผิด
+          if (res.error.name === 'AuthRetryableFetchError' || !res.error.status) {
+            errEl.textContent = 'เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง';
+          } else {
+            errEl.textContent = 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+          }
+          return;
+        }
+        hideLoginOverlay();
+        bootApp();
+      })
+      .catch(function () {
+        btn.disabled = false;
+        errEl.textContent = 'เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง';
+      });
+  });
+}
+
+// L2P4: ปุ่มออกจากระบบ
+var logoutBtn = document.getElementById('logout-btn');
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', function () {
+    if (!confirm('ออกจากระบบ?')) return;
+    sbSignOut();
+  });
+}
+
+// L2P4: SIGNED_OUT (ออกเองหรือ session หมดอายุ) -> โชว์ overlay ทับ (บอร์ดที่ cache ไว้จะยังเห็นลางๆ ข้างหลังได้)
+sbOnAuthChange(function (event) {
+  if (event === 'SIGNED_OUT') {
+    booted = false;
+    if (realtimeUnsubscribe) { realtimeUnsubscribe(); realtimeUnsubscribe = null; }
+    showLoginOverlay();
+  }
+});
+
 // ---------- init ----------
 applyMonthTheme();
 renderTabs();
-renderCaptureDayOptions();
-loadQueueFromStorage(); // งานที่ยังไม่ได้ส่งจากรอบก่อน (ปิดหน้าไปตอนกำลังส่งอยู่) ค้างไว้ใน localStorage
-tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
-loadBoard(); // apiGet มี retry ในตัวอยู่แล้วเผื่อเจอ interstitial ตอนเปิดแอปครั้งแรก ไม่ต้องยิง warm-up แยกอีกรอบ
-flushAll(); // ส่งของที่ค้างจากรอบก่อนต่อทันที
-startPolling(); // เช็คข้อมูลใหม่จาก server เป็นระยะ เผื่อมีการแก้จากเครื่อง/แท็บอื่น
+
+// L2P4: badge บอกว่าเป็นเวอร์ชันทดสอบ (แสดงเฉพาะตอนรันใต้ /next/ — ดู config.js:IS_TEST_BUILD)
+if (IS_TEST_BUILD) {
+  var testBadge = document.getElementById('test-badge');
+  if (testBadge) testBadge.hidden = false;
+}
+
+// L2P4: ต้อง login ก่อนเสมอถึงจะ boot บอร์ดได้ — เช็ค session ที่มีอยู่แล้ว (persistSession ใน supabase-api.js)
+// ก่อน ถ้ามีอยู่แล้วบูตทันทีไม่ต้องให้ผู้ใช้ล็อกอินซ้ำทุกครั้งที่เปิดแอป
+sbGetSession().then(function (session) {
+  if (session) {
+    hideLoginOverlay();
+    bootApp();
+  } else {
+    showLoginOverlay();
+  }
+});
+
+// L2P4: รีเฟรชบอร์ดตอนกลับมาเปิดแท็บ (visible) และตอนเน็ตกลับมา — เสริม Realtime/poll safety net
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden && booted) pollBoard();
+});
+window.addEventListener('online', function () { if (booted) pollBoard(); });
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
