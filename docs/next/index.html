@@ -12,56 +12,47 @@
 </head>
 <body>
   <div class="loading-bar" id="loading-bar"></div>
-  <header>
-    <div class="header-row">
-      <p class="app-title">todo-system</p>
-      <button class="dreams-btn" id="dreams-btn" type="button">🌟 TRUE DREAM</button>
-    </div>
-    <p class="status-line" id="status-line" hidden></p>
-    <div class="tabs" id="workspace-tabs">
-      <button class="tab-btn active" data-workspace="Personal">Personal</button>
-      <button class="tab-btn" data-workspace="Office">Office</button>
-    </div>
-    <div class="tabs view-tabs" id="view-tabs">
-      <button class="tab-btn active" data-view="today">วันนี้</button>
-      <button class="tab-btn" data-view="week">สัปดาห์</button>
-    </div>
-  </header>
 
-  <form class="capture-form" id="capture-form">
-    <input type="text" id="capture-input" placeholder="พิมพ์งานแล้วกด Enter… (ใช้ #project ได้)" autocomplete="off">
-    <button type="submit" class="capture-submit-btn" aria-label="เพิ่มงาน">+</button>
-    <!-- UX1: ตัวคั่นแถวสำหรับ layout 2 แถวบนจอแคบ (<560px) — ไม่มีผลที่ ≥560px (ดู style.css) -->
-    <span class="row-break" aria-hidden="true"></span>
-    <select id="capture-day" class="capture-day-select" aria-label="เลือกวัน"></select>
-    <select id="capture-project" class="capture-project-select" aria-label="เลือก project"></select>
-  </form>
+  <!-- UX2: topbar เดียว sticky คุมทั้ง row1 (workspace/Someday/Dream/menu) และ row2 (capture form) -->
+  <div class="topbar" id="topbar">
+    <div class="topbar-row1">
+      <div class="tabs" id="workspace-tabs">
+        <button class="tab-btn active" data-workspace="Personal">Personal</button>
+        <button class="tab-btn" data-workspace="Office">Office</button>
+      </div>
+      <div class="topbar-spacer"></div>
+      <button class="someday-btn" id="someday-btn" type="button" aria-label="Someday">
+        🗂 <span class="btn-label">Someday</span> <span id="someday-count">0</span>
+      </button>
+      <button class="dreams-btn" id="dreams-btn" type="button">🌟 <span class="btn-label">Dream</span></button>
+      <div class="menu-wrap">
+        <button class="menu-btn" id="menu-btn" type="button" aria-label="เมนู">≡</button>
+        <div class="menu-dropdown" id="menu-dropdown" hidden>
+          <button type="button" id="menu-workload">ภาพรวมงานค้าง</button>
+          <button type="button" id="menu-history">ประวัติงานเสร็จ</button>
+          <button type="button" id="menu-logout">ออกจากระบบ</button>
+        </div>
+      </div>
+    </div>
+
+    <p class="status-line" id="status-line" hidden></p>
+
+    <form class="capture-form" id="capture-form">
+      <input type="text" id="capture-input" placeholder="พิมพ์งานแล้วกด Enter… (ใช้ #project ได้)" autocomplete="off">
+      <button type="submit" class="capture-submit-btn" aria-label="เพิ่มงาน">+</button>
+      <!-- UX1: ตัวคั่นแถวสำหรับ layout 2 แถวบนจอแคบ (<560px) — ไม่มีผลที่ ≥560px (ดู style.css) -->
+      <span class="row-break" aria-hidden="true"></span>
+      <select id="capture-day" class="capture-day-select" aria-label="เลือกวัน"></select>
+      <select id="capture-project" class="capture-project-select" aria-label="เลือก project"></select>
+    </form>
+  </div>
+
+  <!-- UX2: project filter chips อยู่ใต้ topbar เลย ไม่ sticky (ต่างจาก topbar ด้านบน) -->
+  <div class="project-filter" id="project-filter" hidden></div>
 
   <main>
-    <div class="overdue-banner" id="overdue-banner" hidden></div>
-    <div class="workload-section" id="workload-section"></div>
-    <div class="history-section" id="history-section"></div>
-    <div class="project-filter" id="project-filter" hidden></div>
-    <div class="week-nav" id="week-nav" hidden>
-      <button class="icon-btn" id="week-prev" aria-label="สัปดาห์ก่อนหน้า">‹</button>
-      <span class="range" id="week-range"></span>
-      <button class="icon-btn" id="week-next" aria-label="สัปดาห์ถัดไป">›</button>
-    </div>
-    <button class="today-jump" id="today-jump" hidden>กลับไปสัปดาห์นี้</button>
-
     <div id="board"></div>
-
-    <div class="someday-section">
-      <p class="someday-heading">Someday / Note</p>
-      <form class="someday-form" id="someday-form">
-        <input type="text" id="someday-input" placeholder="งานไม่รีบ ไม่ผูกวัน…" autocomplete="off">
-        <button type="submit" class="capture-submit-btn" aria-label="เพิ่มงาน">+</button>
-      </form>
-      <div class="task-list" id="someday-list"></div>
-    </div>
   </main>
-
-  <button class="logout-btn" id="logout-btn" type="button" hidden>ออกจากระบบ</button>
 
   <div class="toast" id="toast"></div>
   <div class="queue-status" id="queue-status" hidden></div>

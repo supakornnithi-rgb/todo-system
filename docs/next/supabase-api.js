@@ -64,11 +64,13 @@
     };
   }
 
-  // 7 วัน Mon..Sun ของสัปดาห์ที่ขอ + someday + master project list — ต้อง deterministic เพราะ app.js
-  // เทียบ boardSignature ด้วย JSON.stringify (ดู app.js:1555-1557)
-  function buildBoard(workspace, weekStart, today, taskRows, projectRows) {
+  // UX2: numDays default 7 (เดิม) แต่ actionGetBoard ตอนนี้ขอ 14 วันเสมอ (จ.สัปดาห์นี้ .. อา.สัปดาห์หน้า)
+  // ให้ planner pane เห็น "พรุ่งนี้..+6" ได้ครบทุกกรณี (ดู rollingDays ใน app.js) — ต้อง deterministic เพราะ
+  // app.js เทียบ boardSignature ด้วย JSON.stringify (ดู app.js:1555-1557 เดิม)
+  function buildBoard(workspace, weekStart, today, taskRows, projectRows, numDays) {
+    numDays = numDays || 7;
     var days = [];
-    for (var i = 0; i < 7; i++) days.push(addDaysIsoLocal(weekStart, i));
+    for (var i = 0; i < numDays; i++) days.push(addDaysIsoLocal(weekStart, i));
 
     var byDay = {};
     days.forEach(function (d) { byDay[d] = []; });
@@ -175,12 +177,16 @@
   }
 
   // ---------- reads ----------
+  // UX2 Task 1: ขอ 14 วัน (จ.สัปดาห์นี้ .. อา.สัปดาห์หน้า) แทน 7 วันเดิม — planner pane ต้องเห็นวันได้ถึง
+  // today+6 เสมอ ซึ่งกรณี today เป็นอาทิตย์ (index 6 นับจาก Monday ของสัปดาห์นี้) จะไปถึง index 12 พอดี
+  // อยู่ในหน้าต่าง 14 วัน [0..13] เสมอ ไม่ต้องขยับ weekStart เลย
+  var BOARD_WINDOW_DAYS = 14;
   function actionGetBoard(params) {
     var workspace = params.workspace;
     var weekStart = params.weekStart;
     var days = [];
-    for (var i = 0; i < 7; i++) days.push(addDaysIsoLocal(weekStart, i));
-    var mon = days[0], sun = days[6];
+    for (var i = 0; i < BOARD_WINDOW_DAYS; i++) days.push(addDaysIsoLocal(weekStart, i));
+    var mon = days[0], sun = days[BOARD_WINDOW_DAYS - 1];
 
     var tasksQuery = sb.from('tasks')
       .select('*, subtasks(*)')
@@ -197,7 +203,7 @@
         var taskRes = results[0], projRes = results[1];
         if (!taskRes.ok) return taskRes;
         if (!projRes.ok) return projRes;
-        var board = buildBoard(workspace, weekStart, todayIsoLocal(), taskRes.data, projRes.data);
+        var board = buildBoard(workspace, weekStart, todayIsoLocal(), taskRes.data, projRes.data, BOARD_WINDOW_DAYS);
         return { ok: true, data: board };
       });
   }

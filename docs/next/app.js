@@ -137,6 +137,47 @@ function computeReorderPosition(fullSortedTaskIds, draggedId, targetId, insertAf
   return idx + 1 + (insertAfter ? 1 : 0);
 }
 
+// ---------- UX2 (pure, testable): วันแบบ "หมุนไปเรื่อยๆ" (rolling) แทนสัปดาห์ปฏิทินตายตัว ----------
+// rollingDays: คืน ISO date เริ่มจาก "พรุ่งนี้" (ไม่รวมวันนี้) จำนวน count วัน ข้ามเสาร์-อาทิตย์ถ้า
+// weekdaysOnly — ใช้กับ planner pane (พรุ่งนี้..+6 ของวันทำการ)
+function rollingDays(todayIsoStr, count, weekdaysOnly) {
+  var days = [];
+  var cursor = todayIsoStr;
+  while (days.length < count) {
+    cursor = addDaysIso(cursor, 1);
+    if (weekdaysOnly && isWeekend(cursor)) continue;
+    days.push(cursor);
+  }
+  return days;
+}
+
+// captureDayOptions: ตัวเลือกวันของฟอร์ม capture — วันนี้..+6 (Office ข้ามเสาร์-อาทิตย์ ตัวเลือกเลย
+// น้อยกว่า) บวก 'someday' ปิดท้ายเสมอ label: 'วันนี้'/'พรุ่งนี้' สองอันแรกที่ตรง ที่เหลือ formatDayHeading
+function captureDayOptions(todayIsoStr, weekdaysOnly) {
+  var raw = [];
+  for (var i = 0; i < 7; i++) raw.push(addDaysIso(todayIsoStr, i));
+  var tomorrow = addDaysIso(todayIsoStr, 1);
+  var options = raw
+    .filter(function (d) { return !(weekdaysOnly && isWeekend(d)); })
+    .map(function (d) {
+      var label = (d === todayIsoStr) ? 'วันนี้' : ((d === tomorrow) ? 'พรุ่งนี้' : formatDayHeading(d));
+      return { value: d, label: label };
+    });
+  options.push({ value: 'someday', label: 'Someday' });
+  return options;
+}
+
+// overdueTasks: งานที่ยังไม่เสร็จของวันที่ผ่านมาแล้ว (day < board.today) ภายในหน้าต่างบอร์ดที่โหลดมา
+function overdueTasks(board) {
+  var out = [];
+  (board.days || []).forEach(function (d) {
+    if (d.date < board.today) {
+      d.tasks.forEach(function (t) { if (!t.done) out.push(t); });
+    }
+  });
+  return out;
+}
+
 // ---------- API ----------
 // L2P4: apiGet/apiPost ไม่ยิง fetch เองตรงๆ อีกต่อไป — ห่อ sbApiGet/sbApiPost (docs/next/supabase-api.js)
 // แทน คงชื่อฟังก์ชันเดิมไว้ตรงๆ เพื่อไม่ต้องแก้จุดเรียกใช้ที่เหลือทั้งไฟล์เลย ตัด HTML-interstitial retry
@@ -389,20 +430,43 @@ function updateQueueStatus() {
 
 window.addEventListener('online', flushAll);
 
+// ---------- UX2: state ของแผงวางแผน (expandedPlannerDays) — persist ผ่าน localStorage ----------
+// ครั้งแรกที่ไม่เคยมีค่าเก็บไว้เลย (ผู้ใช้ใหม่/localStorage ว่าง) ให้ "พรุ่งนี้" กางไว้ก่อนตามที่แผนระบุ
+// ("default only tomorrow is expanded") ผูกกับ workspace ปัจจุบันตอนบูตครั้งนั้น — ครั้งถัดๆ ไปใช้ค่า
+// ที่ผู้ใช้กด toggle ค้างไว้เป๊ะ ไม่ auto-reset อีก
+var PLANNER_OPEN_KEY = STORAGE_PREFIX + 'planner_open';
+function loadPlannerOpenSet(initialWorkspace) {
+  var raw = null;
+  try { raw = localStorage.getItem(PLANNER_OPEN_KEY); } catch (e) {}
+  if (raw === null) {
+    var tomorrow = addDaysIso(todayIso(), 1);
+    return new Set([initialWorkspace + '|' + tomorrow]);
+  }
+  try {
+    return new Set(JSON.parse(raw) || []);
+  } catch (e) {
+    return new Set();
+  }
+}
+function persistPlannerOpenSet(set) {
+  try { localStorage.setItem(PLANNER_OPEN_KEY, JSON.stringify(Array.from(set))); } catch (e) {}
+}
+
 // ---------- state ----------
 var state = {
   workspace: localStorage.getItem(STORAGE_PREFIX + 'workspace') || 'Personal', // L2P4: ts2_ prefix
-  view: localStorage.getItem(STORAGE_PREFIX + 'view') || 'today', // L2P4: ts2_ prefix
-  weekStart: mondayOf(todayIso()),
+  weekStart: mondayOf(todayIso()), // UX2: เสมอเป็นจันทร์ของสัปดาห์นี้ — ไม่มีการเลื่อนสัปดาห์อีกแล้ว
   board: null,
   projectFilter: null,
   expandedTasks: new Set(), // เก็บ id ของ task ที่กางดู subtask อยู่ (UI state ล้วนๆ ไม่ผูกกับ network)
   // UX1: เก็บว่า "workspace|date" ไหนกางดู done tasks อยู่ — ไม่ persist, default พับเก็บเสมอตอนโหลดใหม่
   expandedDoneDays: new Set(),
-  workloadExpanded: false,
-  historyExpanded: false,
+  // UX2: เก็บว่า "workspace|date" ไหนกางแผง planner อยู่ — persist ข้าม reload (ดู loadPlannerOpenSet ด้านบน)
+  expandedPlannerDays: loadPlannerOpenSet(localStorage.getItem(STORAGE_PREFIX + 'workspace') || 'Personal'),
+  somedayOpen: false, // UX2: เปิด/ปิดคอลัมน์ (desktop) หรือ bottom sheet (mobile) ของ Someday
+  overdueExpanded: false, // UX2: กาง/พับส่วน "ค้างจากวันก่อน" ใน Today pane — ไม่ persist, พับไว้ก่อนเสมอ
   historyLoading: false,
-  historyData: null, // {total, stats:[{name,count,pct}]} — โหลดตอนกดกางครั้งแรกของแต่ละ workspace เท่านั้น
+  historyData: null, // {total, stats:[{name,count,pct}]} — โหลดตอนกดเปิด modal ประวัติครั้งแรกของแต่ละ workspace เท่านั้น
   dreamsData: null, // ลิสต์ TRUE DREAM — แยกอิสระจาก workspace/task ทั้งหมด โหลดครั้งแรกตอนกดเปิดปุ่ม
   dreamsLoading: false
 };
@@ -443,7 +507,7 @@ function insertTaskLocal(task) {
       day.tasks.push(task);
       day.tasks.sort(byOrder);
     }
-    // ถ้า task.day ไม่ได้อยู่ในสัปดาห์ที่กำลังเปิดดูอยู่ตอนนี้ ก็แค่ไม่โผล่ในมุมมองปัจจุบัน ถูกต้องแล้ว
+    // ถ้า task.day ไม่ได้อยู่ในหน้าต่างบอร์ดที่กำลังโหลดอยู่ตอนนี้ ก็แค่ไม่โผล่ในมุมมองปัจจุบัน ถูกต้องแล้ว
   }
 }
 
@@ -484,11 +548,11 @@ function refreshUI() {
   renderTabs();
   renderProjectFilter();
   renderCaptureProjectOptions();
-  renderOverdueBanner();
-  renderWorkloadOverview();
-  renderHistoryOverview();
-  renderBoard();
-  renderSomeday();
+  updateSomedayBtn();
+  renderLayout();
+  // ถ้า modal ภาพรวมงานค้าง/ประวัติเปิดค้างอยู่ ให้วาดเนื้อหาใหม่ตามข้อมูลล่าสุดด้วย
+  if (document.getElementById('workload-modal')) openWorkloadModal();
+  if (document.getElementById('history-modal')) openHistoryModal();
 }
 
 // ---------- toast ----------
@@ -506,18 +570,13 @@ function renderTabs() {
   document.querySelectorAll('#workspace-tabs .tab-btn').forEach(function (btn) {
     btn.classList.toggle('active', btn.dataset.workspace === state.workspace);
   });
-  document.querySelectorAll('#view-tabs .tab-btn').forEach(function (btn) {
-    btn.classList.toggle('active', btn.dataset.view === state.view);
-  });
+}
 
-  var isWeek = state.view === 'week';
-  document.body.classList.toggle('view-week', isWeek); // UX1: เปิดโหมดกว้างเต็มจอเฉพาะ Week view บนจอใหญ่
-  document.getElementById('week-nav').hidden = !isWeek;
-  var isCurrentWeek = state.weekStart === mondayOf(todayIso());
-  document.getElementById('today-jump').hidden = !(isWeek && !isCurrentWeek);
-  if (isWeek) {
-    document.getElementById('week-range').textContent = formatWeekRange(state.weekStart);
-  }
+function updateSomedayBtn() {
+  var countEl = document.getElementById('someday-count');
+  if (countEl) countEl.textContent = state.board ? state.board.someday.length : 0;
+  var btn = document.getElementById('someday-btn');
+  if (btn) btn.classList.toggle('active', state.somedayOpen);
 }
 
 function applyTask(task) { upsertTaskLocal(task); }
@@ -612,7 +671,7 @@ function subtaskBoxEl(task) {
   return box;
 }
 
-// ---------- ลากการ์ดงานย้ายวัน (มุมมอง Week เท่านั้น) ----------
+// ---------- ลากการ์ดงานย้ายวัน (ทุก pane / ทุกขนาดจอ ตั้งแต่ UX2) ----------
 // ใช้ Pointer Events (ตัวเดียวรองรับทั้งเมาส์/นิ้ว) แทน HTML5 drag-and-drop เพราะ drag-and-drop
 // มาตรฐานใช้บนมือถือไม่ได้จริง — ต้อง "กดค้าง" ก่อนสักครู่ถึงเริ่มลาก กันการแตะ/เลื่อนหน้าจอปกติ
 // กลายเป็นลากโดยไม่ตั้งใจ ปุ่มต่างๆ ในการ์ด (เช็ค, ลูกศร, ลบ ฯลฯ) ยังกดได้ปกติเพราะเช็ค e.target ก่อนเริ่มจับเวลา
@@ -624,8 +683,8 @@ var DRAG_HOLD_MS = 350;
 var DRAG_MOVE_CANCEL_PX = 24;
 
 function attachDragHandlers(card, task) {
-  // ไม่ตั้ง touch-action:none ที่การ์ดทั้งใบ (ต่างจาก handle ⠿ ที่เป็นจุดเล็กๆ) เพราะการ์ดในมุมมอง
-  // Week กินพื้นที่เกือบเต็มจอ ถ้ากันการเลื่อนหน้าจอตรงนี้ด้วยจะเลื่อน list ขึ้นลงไม่ได้เลยถ้านิ้วเริ่ม
+  // ไม่ตั้ง touch-action:none ที่การ์ดทั้งใบ (ต่างจาก handle ⠿ ที่เป็นจุดเล็กๆ) เพราะการ์ดในลิสต์
+  // กินพื้นที่เกือบเต็มจอ ถ้ากันการเลื่อนหน้าจอตรงนี้ด้วยจะเลื่อน list ขึ้นลงไม่ได้เลยถ้านิ้วเริ่ม
   // แตะบนการ์ด (นี่คือสาเหตุที่เลื่อนจอค้างบ่อยบนมือถือ) ปล่อยให้เบราว์เซอร์ scroll ได้ตามปกติ แล้วใช้
   // ตัวจับเวลา+ระยะขยับ (เหมือน handle) แยกแยะเอาว่าจะลากหรือแค่เลื่อนจอ
   card.addEventListener('pointerdown', function (e) {
@@ -717,7 +776,7 @@ function onDragEnd() {
 }
 
 // ---------- ลากจัดลำดับภายในวันเดียวกัน (handle เฉพาะ ⠿ — แยกจากลากทั้งการ์ดเพื่อย้ายวันด้านบน) ----------
-// ใช้ได้ทั้งมุมมอง Today และ Week เพราะจัดลำดับไม่เกี่ยวกับการย้ายข้ามวัน
+// ใช้ได้ในทุก pane ที่มีงานผูกกับวันจริง (ไม่ใช่ Someday ซึ่งเรียงตาม createdAt ไม่มี handle)
 var reorderDrag = null;
 
 function attachReorderHandle(handle, card, task) {
@@ -860,13 +919,19 @@ function taskCardEl(task, opts) {
   title.addEventListener('click', function () { startTitleEdit(title, task); });
   body.appendChild(title);
 
+  // UX2: chip project เดิม (พื้นสี + ตัวหนังสือ) เปลี่ยนเป็นจุดสี ● + ตัวหนังสือเล็กจางแทน (Task 4)
   var chip = document.createElement('button');
+  chip.type = 'button';
   chip.className = 'project-chip' + (task.project ? '' : ' empty');
-  chip.textContent = task.project || '+ project';
   if (task.project) {
     var chipColor = colorForProject(task.project);
-    chip.style.background = chipColor.bg;
-    chip.style.color = chipColor.fg;
+    var dot = document.createElement('span');
+    dot.className = 'project-dot';
+    dot.style.background = chipColor.fg;
+    chip.appendChild(dot);
+    chip.appendChild(document.createTextNode(task.project));
+  } else {
+    chip.textContent = '+ project';
   }
   chip.addEventListener('click', function () { openProjectPicker(task); });
   body.appendChild(chip);
@@ -953,44 +1018,22 @@ function taskCardEl(task, opts) {
   card.appendChild(body);
   card.appendChild(actions);
 
-  // ลากทั้งการ์ด (แตะที่อื่นนอกปุ่ม/handle) ย้ายวันได้เฉพาะมุมมอง Week และเฉพาะงานที่ผูกกับวัน
-  // (ไม่ใช่ someday — ใช้ปุ่ม ↥ แทน) — แยกจาก handle ด้านบนซึ่งใช้จัดลำดับภายในวันเดียวกันเท่านั้น
-  if (state.view === 'week' && !(opts && opts.somedayItem)) {
-    attachDragHandlers(card, task);
-  }
+  // UX2: ลากทั้งการ์ดย้ายวันได้ในทุก pane/ทุกขนาดจอเสมอ (Today, Planner, Someday) — เดิม (UX1) จำกัดไว้
+  // แค่มุมมอง Week เท่านั้น ตอนนี้ไม่มี view แยกแล้วเลยเปิดให้ทุกที่ รวมถึงการ์ดใน Someday ด้วย (ต้องลาก
+  // ไปวางบนวันได้ ดู .pane-someday ที่ห่อด้วย .day-section data-date="someday")
+  attachDragHandlers(card, task);
 
   return card;
 }
 
-function daySectionEl(date, tasks, isToday) {
-  // UX1: วันที่ผ่านมาแล้ว (ก่อน today ของบอร์ด) หัวข้อจางลง — การ์ดข้างในไม่โดนจาง
-  var isPast = !!(state.board && date < state.board.today);
-
-  var section = document.createElement('div');
-  section.className = 'day-section' + (isToday ? ' is-today' : '');
-  section.dataset.date = date;
-
-  var heading = document.createElement('p');
-  heading.className = 'day-heading' + (isToday ? ' is-today' : '') + (isPast ? ' is-past' : '');
-  if (isToday) {
-    var dot = document.createElement('span');
-    dot.className = 'dot';
-    heading.appendChild(dot);
-  }
-  heading.appendChild(document.createTextNode(formatDayHeading(date)));
-  if (isToday) {
-    var pill = document.createElement('span');
-    pill.className = 'today-pill';
-    pill.textContent = 'วันนี้';
-    heading.appendChild(pill);
-  }
-  section.appendChild(heading);
-
+// ---------- UX2: ตัวช่วยสร้างลิสต์งาน (ใช้ร่วมกันทุก pane: Today, Planner, Someday) ----------
+// แยกงานที่เสร็จแล้วออกไปพับเก็บต่างหาก (ลิสต์ tasks ที่รับมาเรียงตาม order/createdAt อยู่แล้ว รักษา
+// ลำดับเดิมไว้ในแต่ละกลุ่ม) — key ของ expandedDoneDays คือ workspace + '|' + date (date อาจเป็น 'someday')
+function buildTaskListBody(tasks, date, opts) {
+  var somedayItem = !!(opts && opts.somedayItem);
   var list = document.createElement('div');
   list.className = 'task-list';
 
-  // UX1: แยกงานที่เสร็จแล้วออกไปพับเก็บต่างหาก (ลิสต์ tasks ที่รับมาเรียงตาม order อยู่แล้ว รักษาลำดับ
-  // เดิมไว้ในแต่ละกลุ่ม) — ใช้ได้ทั้งมุมมอง Today และ Week เพราะเรียก daySectionEl ร่วมกัน
   var openTasks = tasks.filter(function (t) { return !t.done; });
   var doneTasks = tasks.filter(function (t) { return t.done; });
 
@@ -1000,7 +1043,7 @@ function daySectionEl(date, tasks, isToday) {
     hint.textContent = 'ยังไม่มีงาน';
     list.appendChild(hint);
   } else {
-    openTasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
+    openTasks.forEach(function (t) { list.appendChild(taskCardEl(t, { somedayItem: somedayItem })); });
   }
 
   if (doneTasks.length > 0) {
@@ -1010,66 +1053,280 @@ function daySectionEl(date, tasks, isToday) {
     toggle.type = 'button';
     toggle.className = 'done-toggle';
     toggle.textContent = '✓ เสร็จแล้ว ' + doneTasks.length + ' งาน ' + (expanded ? '▾' : '▸');
-    toggle.addEventListener('click', function () {
+    toggle.addEventListener('click', function (e) {
+      e.stopPropagation(); // กันชนกับคลิก heading ของ day-section แบบ collapsible ที่ห่ออยู่ (planner)
       if (expanded) state.expandedDoneDays.delete(expandKey);
       else state.expandedDoneDays.add(expandKey);
       refreshUI();
     });
     list.appendChild(toggle);
     if (expanded) {
-      doneTasks.forEach(function (t) { list.appendChild(taskCardEl(t)); });
+      doneTasks.forEach(function (t) { list.appendChild(taskCardEl(t, { somedayItem: somedayItem })); });
     }
   }
 
-  section.appendChild(list);
+  return list;
+}
+
+// daySectionEl: การ์ดของ "หนึ่งวัน" — ใช้ทั้งใน Today pane (hideHeading:true, ไม่ collapsible) และ
+// Planner pane (collapsible:true, มี label/onToggle ของตัวเอง) เสมอเป็น .day-section ที่มี data-date
+// ให้โค้ดลาก (onDragMove -> closest('.day-section')) หาเจอได้แม้ตอนพับอยู่ก็ตาม (ยังเป็น drop target)
+function daySectionEl(date, tasks, opts) {
+  opts = opts || {};
+  var isToday = !!opts.isToday;
+  var isPast = !!(state.board && date < state.board.today);
+
+  var section = document.createElement('div');
+  section.className = 'day-section' + (isToday ? ' is-today' : '');
+  section.dataset.date = date;
+
+  if (!opts.hideHeading) {
+    var heading = document.createElement('div');
+    heading.className = 'day-heading' + (isToday ? ' is-today' : '') + (isPast ? ' is-past' : '') +
+      (opts.collapsible ? ' collapsible' : '');
+
+    var labelSpan = document.createElement('span');
+    labelSpan.className = 'day-heading-label';
+    labelSpan.textContent = opts.label || formatDayHeading(date);
+    heading.appendChild(labelSpan);
+
+    if (isToday && !opts.label) {
+      var pill = document.createElement('span');
+      pill.className = 'today-pill';
+      pill.textContent = 'วันนี้';
+      heading.appendChild(pill);
+    }
+
+    var openCount = tasks.filter(function (t) { return !t.done; }).length;
+    var countBadge = document.createElement('span');
+    countBadge.className = 'day-count';
+    countBadge.textContent = openCount + ' งาน';
+    heading.appendChild(countBadge);
+
+    if (opts.collapsible) {
+      var arrow = document.createElement('span');
+      arrow.className = 'day-arrow';
+      arrow.textContent = opts.expanded ? '▾' : '▸';
+      heading.appendChild(arrow);
+      heading.addEventListener('click', function () { if (opts.onToggle) opts.onToggle(); });
+    }
+
+    section.appendChild(heading);
+  }
+
+  if (!opts.collapsible || opts.expanded) {
+    section.appendChild(buildTaskListBody(tasks, date));
+  }
+
   return section;
 }
 
-function renderBoard() {
+// ---------- UX2: Today pane ----------
+function overdueSectionEl() {
+  var tasks = filterTasks(overdueTasks(state.board));
+  if (tasks.length === 0) return null;
+
+  var wrap = document.createElement('div');
+  wrap.className = 'overdue-section';
+
+  var expanded = state.overdueExpanded;
+  var toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'done-toggle overdue-toggle';
+  toggle.textContent = 'ค้างจากวันก่อน ' + tasks.length + ' งาน ' + (expanded ? '▾' : '▸');
+  toggle.addEventListener('click', function () {
+    state.overdueExpanded = !state.overdueExpanded;
+    renderLayout();
+  });
+  wrap.appendChild(toggle);
+
+  if (expanded) {
+    var list = document.createElement('div');
+    list.className = 'task-list overdue-task-list';
+    tasks.forEach(function (t) {
+      var label = document.createElement('div');
+      label.className = 'overdue-day-label';
+      label.textContent = formatDayHeading(t.day);
+      list.appendChild(label);
+      list.appendChild(taskCardEl(t));
+    });
+    wrap.appendChild(list);
+  }
+
+  return wrap;
+}
+
+function todayPaneEl() {
+  var pane = document.createElement('div');
+  pane.className = 'pane pane-today';
+
+  var weekdaysOnly = isWeekdaysOnly(state.board.workspace);
+  var todayDate = state.board.today;
+
+  if (weekdaysOnly && isWeekend(todayDate)) {
+    var hint = document.createElement('p');
+    hint.className = 'empty-hint';
+    hint.textContent = 'วันหยุดสุดสัปดาห์ ไม่มีงาน Office วันนี้';
+    pane.appendChild(hint);
+    var overdueElA = overdueSectionEl();
+    if (overdueElA) pane.appendChild(overdueElA);
+    return pane;
+  }
+
+  var todayDay = state.board.days.find(function (d) { return d.date === todayDate; });
+  var tasks = todayDay ? filterTasks(todayDay.tasks) : [];
+  var openCount = tasks.filter(function (t) { return !t.done; }).length;
+
+  var title = document.createElement('p');
+  title.className = 'pane-title';
+  title.textContent = 'วันนี้ · ' + formatDayHeading(todayDate) + ' ';
+  var countPill = document.createElement('span');
+  countPill.className = 'pane-count-pill';
+  countPill.textContent = openCount;
+  title.appendChild(countPill);
+  pane.appendChild(title);
+
+  // UX2: pane-title ด้านบนโชว์วันที่/จำนวนไปแล้ว — day-section ของวันนี้เองซ่อน heading ซ้ำ
+  // (hideHeading) เหลือแค่ลิสต์งาน + UX1 done-toggle ลดความรก ("less chrome at the top")
+  pane.appendChild(daySectionEl(todayDate, tasks, { isToday: true, hideHeading: true }));
+
+  var overdueElB = overdueSectionEl();
+  if (overdueElB) pane.appendChild(overdueElB);
+
+  return pane;
+}
+
+// ---------- UX2: Planner pane ----------
+function plannerPaneEl() {
+  var pane = document.createElement('div');
+  pane.className = 'pane pane-planner';
+
+  var title = document.createElement('p');
+  title.className = 'pane-title';
+  title.textContent = 'วางแผน';
+  pane.appendChild(title);
+
+  var weekdaysOnly = isWeekdaysOnly(state.board.workspace);
+  var tomorrow = addDaysIso(state.board.today, 1);
+  var days = rollingDays(state.board.today, 6, weekdaysOnly);
+
+  days.forEach(function (date) {
+    var dayObj = state.board.days.find(function (d) { return d.date === date; });
+    var tasks = dayObj ? filterTasks(dayObj.tasks) : [];
+    var key = state.workspace + '|' + date;
+    var expanded = state.expandedPlannerDays.has(key);
+    var label = (date === tomorrow) ? 'พรุ่งนี้' : formatDayHeading(date);
+
+    var section = daySectionEl(date, tasks, {
+      collapsible: true,
+      expanded: expanded,
+      label: label,
+      onToggle: function () {
+        if (state.expandedPlannerDays.has(key)) state.expandedPlannerDays.delete(key);
+        else state.expandedPlannerDays.add(key);
+        persistPlannerOpenSet(state.expandedPlannerDays);
+        renderLayout();
+      }
+    });
+    pane.appendChild(section);
+  });
+
+  return pane;
+}
+
+// ---------- UX2: Someday pane/sheet (คอลัมน์ที่ 3 บน desktop, bottom sheet บนมือถือ — CSS media query
+// ตัดสินหน้าตา ใช้ markup เดียวกันทั้งสองกรณี) ----------
+function onSomedaySubmit(e) {
+  e.preventDefault();
+  var input = document.getElementById('someday-input');
+  var title = input.value.trim();
+  if (!title) return;
+  input.value = '';
+
+  var tempId = crypto.randomUUID(); // L2P4: UUID จริงแทน tmp_<ts>_<rand>
+  insertTaskLocal({
+    id: tempId, workspace: state.workspace, title: title, project: '', day: 'someday',
+    weekStart: '', done: false, createdAt: new Date().toISOString(), completedAt: '', order: 0, subtasks: []
+  });
+  refreshUI();
+  queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: 'someday', tempId: tempId });
+}
+
+function somedayBackdropEl() {
+  var b = document.createElement('div');
+  b.className = 'someday-backdrop';
+  b.addEventListener('click', function () { state.somedayOpen = false; refreshUI(); });
+  return b;
+}
+
+function somedayPaneEl() {
+  var pane = document.createElement('div');
+  pane.className = 'pane pane-someday';
+
+  var header = document.createElement('div');
+  header.className = 'someday-header';
+  var title = document.createElement('p');
+  title.className = 'pane-title';
+  title.textContent = 'Someday';
+  header.appendChild(title);
+  var closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'someday-close';
+  closeBtn.setAttribute('aria-label', 'ปิด Someday');
+  closeBtn.textContent = '✕';
+  closeBtn.addEventListener('click', function () { state.somedayOpen = false; refreshUI(); });
+  header.appendChild(closeBtn);
+  pane.appendChild(header);
+
+  var form = document.createElement('form');
+  form.className = 'someday-form';
+  form.id = 'someday-form';
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.id = 'someday-input';
+  input.placeholder = 'งานไม่รีบ ไม่ผูกวัน…';
+  input.autocomplete = 'off';
+  var submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.className = 'capture-submit-btn';
+  submitBtn.setAttribute('aria-label', 'เพิ่มงาน');
+  submitBtn.textContent = '+';
+  form.appendChild(input);
+  form.appendChild(submitBtn);
+  form.addEventListener('submit', onSomedaySubmit);
+  pane.appendChild(form);
+
+  // UX2 Task 3 item 3: ทำให้คอลัมน์ Someday เป็น .day-section data-date="someday" ด้วย — วางการ์ดจาก
+  // วันอื่นมาที่นี่ได้เหมือนวันปกติ (onDragMove หา .day-section ผ่าน elementFromPoint().closest() เจอ
+  // section นี้พอดี แล้ว onDragEnd อ่าน dataset.date='someday' ไปเรียก updateTaskField({day:'someday'}))
+  var listSection = document.createElement('div');
+  listSection.className = 'day-section someday-list-section';
+  listSection.dataset.date = 'someday';
+  var tasks = filterTasks(state.board.someday);
+  listSection.appendChild(buildTaskListBody(tasks, 'someday', { somedayItem: true }));
+  pane.appendChild(listSection);
+
+  return pane;
+}
+
+// ---------- UX2: renderLayout (เดิมชื่อ renderBoard) — ประกอบ .layout ที่มี .pane-today/.pane-planner
+// และ .pane-someday (เฉพาะตอนเปิด) เข้า #board ----------
+function renderLayout() {
   var boardEl = document.getElementById('board');
   boardEl.innerHTML = '';
   if (!state.board) return;
 
-  var weekdaysOnly = isWeekdaysOnly(state.board.workspace);
+  var layout = document.createElement('div');
+  layout.className = 'layout' + (state.somedayOpen ? ' someday-open' : '');
 
-  if (state.view === 'today') {
-    if (weekdaysOnly && isWeekend(state.board.today)) {
-      var weekendHint = document.createElement('p');
-      weekendHint.className = 'empty-hint';
-      weekendHint.textContent = 'วันหยุดสุดสัปดาห์ ไม่มีงาน Office วันนี้';
-      boardEl.appendChild(weekendHint);
-      return;
-    }
-    var todayDay = state.board.days.find(function (d) { return d.date === state.board.today; });
-    if (todayDay) {
-      boardEl.appendChild(daySectionEl(todayDay.date, filterTasks(todayDay.tasks), true));
-    }
-  } else {
-    var grid = document.createElement('div');
-    grid.className = 'week-grid' + (weekdaysOnly ? ' week-grid--5' : ''); // UX1: Office เห็นแค่ จ-ศ ให้กริด 5 คอลัมน์
-    state.board.days.forEach(function (d) {
-      if (weekdaysOnly && isWeekend(d.date)) return; // Office ไม่มีวันเสาร์-อาทิตย์ให้โชว์
-      grid.appendChild(daySectionEl(d.date, filterTasks(d.tasks), d.date === state.board.today));
-    });
-    boardEl.appendChild(grid);
+  layout.appendChild(todayPaneEl());
+  layout.appendChild(plannerPaneEl());
+  if (state.somedayOpen) {
+    layout.appendChild(somedayBackdropEl());
+    layout.appendChild(somedayPaneEl());
   }
-}
 
-function renderSomeday() {
-  var listEl = document.getElementById('someday-list');
-  listEl.innerHTML = '';
-  if (!state.board) return;
-  var tasks = filterTasks(state.board.someday);
-  if (tasks.length === 0) {
-    var hint = document.createElement('p');
-    hint.className = 'empty-hint';
-    hint.textContent = state.board.someday.length === 0 ? 'ยังไม่มีงานใน Someday' : 'ไม่มีงานของ project นี้ใน Someday';
-    listEl.appendChild(hint);
-    return;
-  }
-  tasks.forEach(function (t) {
-    listEl.appendChild(taskCardEl(t, { somedayItem: true }));
-  });
+  boardEl.appendChild(layout);
 }
 
 // ---------- project filter chips ----------
@@ -1090,8 +1347,7 @@ function renderProjectFilter() {
     state.projectFilter = null;
     renderProjectFilter();
     renderCaptureProjectOptions();
-    renderBoard();
-    renderSomeday();
+    renderLayout();
   });
   el.appendChild(allBtn);
 
@@ -1108,8 +1364,7 @@ function renderProjectFilter() {
       state.projectFilter = name;
       renderProjectFilter();
       renderCaptureProjectOptions();
-      renderBoard();
-      renderSomeday();
+      renderLayout();
     });
     el.appendChild(btn);
   });
@@ -1146,7 +1401,9 @@ function renderCaptureProjectOptions() {
   select.value = (stored && projects.indexOf(stored) !== -1) ? stored : '';
 }
 
-// ---------- ภาพรวมงานค้างต่อ project (สัดส่วนงานยังไม่เสร็จของสัปดาห์ที่กำลังดูอยู่ + someday) ----------
+// ---------- UX2: ภาพรวมงานค้าง/ประวัติงานเสร็จ ย้ายเข้า modal ที่เปิดจากเมนู ≡ (เดิม UX1/L2P4 เป็นแถบ
+// พับ/กางอยู่หน้าเพจตรงๆ) — computeWorkloadStats ยังคำนวณจาก state.board ทั้งก้อนเหมือนเดิม (รวม 14 วัน
+// ในหน้าต่างบอร์ดตอนนี้ + someday) ไม่ได้ผูกกับ "สัปดาห์ที่กำลังดู" อีกต่อไปเพราะไม่มีมุมมองสัปดาห์แล้ว ----------
 var NO_PROJECT_LABEL = '(ไม่มี project)';
 var NO_PROJECT_COLOR = '#a8a196';
 
@@ -1167,147 +1424,153 @@ function computeWorkloadStats() {
     .sort(function (a, b) { return b.count - a.count; });
 }
 
-function renderWorkloadOverview() {
-  var el = document.getElementById('workload-section');
-  el.innerHTML = '';
+// สร้างแท่งสัดส่วน + ลิสต์ตัวเลข ใช้ร่วมกันทั้ง modal ภาพรวมงานค้าง และ modal ประวัติ
+function buildStatsContent(stats) {
+  var wrap = document.createElement('div');
+  if (!stats || stats.length === 0) {
+    var hint = document.createElement('p');
+    hint.className = 'empty-hint';
+    hint.textContent = 'ไม่มีข้อมูล';
+    wrap.appendChild(hint);
+    return wrap;
+  }
+
+  var bar = document.createElement('div');
+  bar.className = 'workload-bar';
+  stats.forEach(function (s) {
+    var seg = document.createElement('span');
+    seg.style.width = s.pct + '%';
+    seg.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
+    bar.appendChild(seg);
+  });
+  wrap.appendChild(bar);
+
+  var list = document.createElement('div');
+  list.className = 'workload-list';
+  stats.forEach(function (s) {
+    var row = document.createElement('div');
+    row.className = 'workload-row';
+
+    var dot = document.createElement('span');
+    dot.className = 'workload-dot';
+    dot.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
+
+    var label = document.createElement('span');
+    label.className = 'workload-label';
+    label.textContent = s.name;
+
+    var value = document.createElement('span');
+    value.className = 'workload-value';
+    value.textContent = s.count + ' งาน · ' + s.pct + '%';
+
+    row.appendChild(dot);
+    row.appendChild(label);
+    row.appendChild(value);
+    list.appendChild(row);
+  });
+  wrap.appendChild(list);
+
+  return wrap;
+}
+
+function openWorkloadModal() {
+  closeWorkloadModal();
   if (!state.board) return;
+
+  var backdrop = document.createElement('div');
+  backdrop.className = 'backdrop';
+  backdrop.id = 'workload-modal-backdrop';
+  backdrop.addEventListener('click', closeWorkloadModal);
+
+  var panel = document.createElement('div');
+  panel.className = 'modal-panel';
+  panel.id = 'workload-modal';
+  var h3 = document.createElement('h3');
+  h3.textContent = 'ภาพรวมงานค้าง';
+  panel.appendChild(h3);
 
   var stats = computeWorkloadStats();
   var total = stats.reduce(function (s, x) { return s + x.count; }, 0);
-
-  var toggle = document.createElement('button');
-  toggle.className = 'workload-toggle';
-  toggle.textContent = (state.workloadExpanded ? '▾ ' : '▸ ') + 'ภาพรวมงานค้าง' + (total ? ' (' + total + ' งาน)' : '');
-  toggle.addEventListener('click', function () {
-    state.workloadExpanded = !state.workloadExpanded;
-    renderWorkloadOverview();
-  });
-  el.appendChild(toggle);
-
-  if (!state.workloadExpanded) return;
-
   if (total === 0) {
     var hint = document.createElement('p');
     hint.className = 'empty-hint';
-    hint.textContent = 'ไม่มีงานค้างในสัปดาห์นี้ 🎉';
-    el.appendChild(hint);
-    return;
+    hint.textContent = 'ไม่มีงานค้างเลย 🎉';
+    panel.appendChild(hint);
+  } else {
+    panel.appendChild(buildStatsContent(stats));
   }
 
-  var bar = document.createElement('div');
-  bar.className = 'workload-bar';
-  stats.forEach(function (s) {
-    var seg = document.createElement('span');
-    seg.style.width = s.pct + '%';
-    seg.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
-    bar.appendChild(seg);
-  });
-  el.appendChild(bar);
+  var closeBtn = document.createElement('button');
+  closeBtn.className = 'close-btn';
+  closeBtn.textContent = 'ปิด';
+  closeBtn.addEventListener('click', closeWorkloadModal);
+  panel.appendChild(closeBtn);
 
-  var list = document.createElement('div');
-  list.className = 'workload-list';
-  stats.forEach(function (s) {
-    var row = document.createElement('div');
-    row.className = 'workload-row';
-
-    var dot = document.createElement('span');
-    dot.className = 'workload-dot';
-    dot.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
-
-    var label = document.createElement('span');
-    label.className = 'workload-label';
-    label.textContent = s.name;
-
-    var value = document.createElement('span');
-    value.className = 'workload-value';
-    value.textContent = s.count + ' งาน · ' + s.pct + '%';
-
-    row.appendChild(dot);
-    row.appendChild(label);
-    row.appendChild(value);
-    list.appendChild(row);
-  });
-  el.appendChild(list);
+  document.body.appendChild(backdrop);
+  document.body.appendChild(panel);
 }
 
-// ---------- ประวัติงานเสร็จแล้ว (ทุกสัปดาห์ย้อนหลัง ไม่ใช่แค่สัปดาห์ปัจจุบัน) ----------
-// โหลดแบบ lazy ตอนกดกางครั้งแรกของแต่ละ workspace เท่านั้น (คนละ endpoint จาก getBoard เพราะต้อง
-// อ่านทั้งชีต ไม่ได้อ่านแค่สัปดาห์เดียว) แล้ว cache ไว้ใน state.historyData จนกว่าจะสลับ workspace
-function renderHistoryOverview() {
-  var el = document.getElementById('history-section');
-  el.innerHTML = '';
+function closeWorkloadModal() {
+  var b = document.getElementById('workload-modal-backdrop');
+  var p = document.getElementById('workload-modal');
+  if (b) b.remove();
+  if (p) p.remove();
+}
 
-  var toggle = document.createElement('button');
-  toggle.className = 'workload-toggle';
-  toggle.textContent = (state.historyExpanded ? '▾ ' : '▸ ') + 'ประวัติงานเสร็จแล้ว' +
-    (state.historyData ? ' (' + state.historyData.total + ' งาน)' : '');
-  toggle.addEventListener('click', function () {
-    state.historyExpanded = !state.historyExpanded;
-    if (state.historyExpanded && !state.historyData) {
-      loadHistory();
-    } else {
-      renderHistoryOverview();
-    }
-  });
-  el.appendChild(toggle);
+// ---------- ประวัติงานเสร็จแล้ว (ทุกสัปดาห์ย้อนหลัง ไม่ใช่แค่หน้าต่างบอร์ดที่โหลดอยู่) ----------
+// โหลดแบบ lazy ตอนกดเปิด modal ครั้งแรกของแต่ละ workspace เท่านั้น (คนละ endpoint จาก getBoard เพราะต้อง
+// อ่านทั้งตาราง ไม่ได้อ่านแค่หน้าต่างบอร์ดเดียว) แล้ว cache ไว้ใน state.historyData จนกว่าจะสลับ workspace
+function openHistoryModal() {
+  closeHistoryModal();
 
-  if (!state.historyExpanded) return;
+  var backdrop = document.createElement('div');
+  backdrop.className = 'backdrop';
+  backdrop.id = 'history-modal-backdrop';
+  backdrop.addEventListener('click', closeHistoryModal);
 
-  if (state.historyLoading) {
+  var panel = document.createElement('div');
+  panel.className = 'modal-panel';
+  panel.id = 'history-modal';
+  var h3 = document.createElement('h3');
+  h3.textContent = 'ประวัติงานเสร็จแล้ว';
+  panel.appendChild(h3);
+
+  if (state.historyLoading || !state.historyData) {
     var loadingHint = document.createElement('p');
     loadingHint.className = 'empty-hint';
     loadingHint.textContent = 'กำลังโหลด...';
-    el.appendChild(loadingHint);
-    return;
+    panel.appendChild(loadingHint);
+  } else if (state.historyData.total === 0) {
+    var emptyHint = document.createElement('p');
+    emptyHint.className = 'empty-hint';
+    emptyHint.textContent = 'ยังไม่มีงานที่เสร็จเลย';
+    panel.appendChild(emptyHint);
+  } else {
+    panel.appendChild(buildStatsContent(state.historyData.stats));
   }
 
-  if (!state.historyData || state.historyData.total === 0) {
-    var hint = document.createElement('p');
-    hint.className = 'empty-hint';
-    hint.textContent = 'ยังไม่มีงานที่เสร็จเลย';
-    el.appendChild(hint);
-    return;
-  }
+  var closeBtn = document.createElement('button');
+  closeBtn.className = 'close-btn';
+  closeBtn.textContent = 'ปิด';
+  closeBtn.addEventListener('click', closeHistoryModal);
+  panel.appendChild(closeBtn);
 
-  var bar = document.createElement('div');
-  bar.className = 'workload-bar';
-  state.historyData.stats.forEach(function (s) {
-    var seg = document.createElement('span');
-    seg.style.width = s.pct + '%';
-    seg.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
-    bar.appendChild(seg);
-  });
-  el.appendChild(bar);
+  document.body.appendChild(backdrop);
+  document.body.appendChild(panel);
 
-  var list = document.createElement('div');
-  list.className = 'workload-list';
-  state.historyData.stats.forEach(function (s) {
-    var row = document.createElement('div');
-    row.className = 'workload-row';
+  if (!state.historyData && !state.historyLoading) loadHistory();
+}
 
-    var dot = document.createElement('span');
-    dot.className = 'workload-dot';
-    dot.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
-
-    var label = document.createElement('span');
-    label.className = 'workload-label';
-    label.textContent = s.name;
-
-    var value = document.createElement('span');
-    value.className = 'workload-value';
-    value.textContent = s.count + ' งาน · ' + s.pct + '%';
-
-    row.appendChild(dot);
-    row.appendChild(label);
-    row.appendChild(value);
-    list.appendChild(row);
-  });
-  el.appendChild(list);
+function closeHistoryModal() {
+  var b = document.getElementById('history-modal-backdrop');
+  var p = document.getElementById('history-modal');
+  if (b) b.remove();
+  if (p) p.remove();
 }
 
 function loadHistory() {
   state.historyLoading = true;
-  renderHistoryOverview();
+  if (document.getElementById('history-modal')) openHistoryModal();
   setLoading(true, 'กำลังโหลดประวัติ...');
   apiGet({ action: 'getProjectHistory', workspace: state.workspace })
     .then(function (res) {
@@ -1316,58 +1579,31 @@ function loadHistory() {
     })
     .catch(function (err) {
       showToast('ผิดพลาด: ' + err.message);
-      state.historyExpanded = false;
     })
     .then(function () {
       state.historyLoading = false;
       setLoading(false);
-      renderHistoryOverview();
+      if (document.getElementById('history-modal')) openHistoryModal();
     });
 }
 
-// ---------- overdue banner ----------
-function renderOverdueBanner() {
-  var el = document.getElementById('overdue-banner');
-  if (!state.board) { el.hidden = true; return; }
-  var count = 0;
-  state.board.days.forEach(function (d) {
-    if (d.date < state.board.today) {
-      d.tasks.forEach(function (t) { if (!t.done) count++; });
-    }
-  });
-  if (count === 0) {
-    el.hidden = true;
-    return;
-  }
-  el.hidden = false;
-  el.textContent = '⚠️ มีงานค้างจากวันก่อนหน้ายังไม่เสร็จ ' + count + ' งาน';
-}
-
 // ---------- capture day picker ----------
-// ตัวเลือกวันของฟอร์ม quick capture อิงสัปดาห์ปัจจุบันจริงเสมอ (ไม่อิงสัปดาห์ที่กำลังเปิดดูอยู่ใน
-// มุมมอง Week) เพราะ requirement คือ "เลือกวันในสัปดาห์นี้ได้ ไม่เลือกก็ลงวันนี้" — ค่า default รีเซ็ต
-// กลับเป็นวันนี้ทุกครั้งหลังเพิ่มงานสำเร็จ ไม่ค้างค่าที่เลือกไว้ก่อนหน้า
+// UX2: ตัวเลือกวันของฟอร์ม quick capture เปลี่ยนจาก "วันในสัปดาห์ปฏิทินนี้" เป็น "วันนี้..+6 แบบหมุนไป
+// เรื่อยๆ" (captureDayOptions) บวก Someday ปิดท้ายเสมอ — ค่า default คือวันแรกในลิสต์ (วันนี้ ยกเว้น
+// Office ตรงวันหยุดสุดสัปดาห์ซึ่งวันนี้ไม่อยู่ในลิสต์ ตัวแรกจะกลายเป็นจันทร์ถัดไปโดยอัตโนมัติ)
 function renderCaptureDayOptions() {
   var select = document.getElementById('capture-day');
   select.innerHTML = '';
-  var monday = mondayOf(todayIso());
-  var today = todayIso();
   var weekdaysOnly = isWeekdaysOnly(state.workspace);
-  var dates = [];
-  for (var i = 0; i < 7; i++) {
-    var date = addDaysIso(monday, i);
-    if (weekdaysOnly && isWeekend(date)) continue; // Office เลือกได้แค่ จ-ศ
-    dates.push(date);
-  }
-  dates.forEach(function (date) {
-    var opt = document.createElement('option');
-    opt.value = date;
-    opt.textContent = (date === today ? 'วันนี้' : formatDayHeading(date));
-    select.appendChild(opt);
+  var options = captureDayOptions(todayIso(), weekdaysOnly);
+  options.forEach(function (opt) {
+    var o = document.createElement('option');
+    o.value = opt.value;
+    o.textContent = opt.label;
+    select.appendChild(o);
   });
-  // ถ้าวันนี้เป็นเสาร์-อาทิตย์และ workspace ทำงานแค่ จ-ศ (ไม่มีตัวเลือก "วันนี้" ให้เลือก)
-  // ให้ default ไปวันศุกร์ก่อนหน้า (วันทำการล่าสุดในสัปดาห์นี้) แทน
-  select.value = dates.indexOf(today) !== -1 ? today : dates[dates.length - 1];
+  var firstReal = options.find(function (o) { return o.value !== 'someday'; });
+  select.value = firstReal ? firstReal.value : 'someday';
 }
 
 // ---------- project picker ----------
@@ -1736,44 +1972,22 @@ function startPolling() {
   pollingTimer = setInterval(pollBoard, POLL_INTERVAL_MS);
 }
 
+// ---------- events ----------
 document.getElementById('dreams-btn').addEventListener('click', openDreamsPanel);
 
-// ---------- events ----------
 document.getElementById('workspace-tabs').addEventListener('click', function (e) {
   var btn = e.target.closest('.tab-btn');
   if (!btn) return;
   state.workspace = btn.dataset.workspace;
   state.projectFilter = null; // project คนละชุดกันต่อ workspace เลยรีเซ็ต filter ทุกครั้งที่สลับ
   state.historyData = null; // ประวัติเป็นของแต่ละ workspace แยกกัน ต้องโหลดใหม่ตอนสลับ
-  state.historyExpanded = false;
+  state.somedayOpen = false; // ปิดแผง Someday ไว้ก่อนตอนสลับ workspace กันสับสนว่าเห็นของ workspace ไหน
   localStorage.setItem(STORAGE_PREFIX + 'workspace', state.workspace); // L2P4: ts2_ prefix
   renderCaptureDayOptions(); // Office เลือกได้แค่ จ-ศ ต้องคำนวณตัวเลือกใหม่ทุกครั้งที่สลับ workspace
   renderCaptureProjectOptions(); // UX1: project เป็นคนละชุดต่อ workspace ต้องรีเซ็ต/พรีเซตค่าล่าสุดใหม่ด้วย
   tryRenderFromCache(state.workspace); // โชว์ของล่าสุดที่เคยเห็นทันที ระหว่างรอข้อมูลสดจริง
   loadBoard();
   renderTabs();
-});
-
-document.getElementById('view-tabs').addEventListener('click', function (e) {
-  var btn = e.target.closest('.tab-btn');
-  if (!btn) return;
-  state.view = btn.dataset.view;
-  localStorage.setItem(STORAGE_PREFIX + 'view', state.view); // L2P4: ts2_ prefix
-  renderTabs();
-  renderBoard();
-});
-
-document.getElementById('week-prev').addEventListener('click', function () {
-  state.weekStart = addDaysIso(state.weekStart, -7);
-  loadBoard();
-});
-document.getElementById('week-next').addEventListener('click', function () {
-  state.weekStart = addDaysIso(state.weekStart, 7);
-  loadBoard();
-});
-document.getElementById('today-jump').addEventListener('click', function () {
-  state.weekStart = mondayOf(todayIso());
-  loadBoard();
 });
 
 document.getElementById('capture-form').addEventListener('submit', function (e) {
@@ -1812,20 +2026,43 @@ document.getElementById('capture-form').addEventListener('submit', function (e) 
   queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: day, tempId: tempId, project: project });
 });
 
-document.getElementById('someday-form').addEventListener('submit', function (e) {
-  e.preventDefault();
-  var input = document.getElementById('someday-input');
-  var title = input.value.trim();
-  if (!title) return;
-  input.value = '';
-
-  var tempId = crypto.randomUUID(); // L2P4: UUID จริงแทน tmp_<ts>_<rand>
-  insertTaskLocal({
-    id: tempId, workspace: state.workspace, title: title, project: '', day: 'someday',
-    weekStart: '', done: false, createdAt: new Date().toISOString(), completedAt: '', order: 0, subtasks: []
-  });
+// UX2: ปุ่ม Someday บน topbar — เปิด/ปิดคอลัมน์ที่ 3 (desktop) หรือ bottom sheet (มือถือ)
+document.getElementById('someday-btn').addEventListener('click', function () {
+  state.somedayOpen = !state.somedayOpen;
   refreshUI();
-  queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: 'someday', tempId: tempId });
+});
+
+// UX2: ปิด Someday sheet/column ด้วย Escape (ตามที่แผนระบุสำหรับ bottom sheet บนมือถือ ใช้ได้ทั้ง desktop ด้วย)
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && state.somedayOpen) {
+    state.somedayOpen = false;
+    refreshUI();
+  }
+});
+
+// UX2: เมนู ≡ — dropdown เล็กๆ ใต้ปุ่ม คลิกนอกดรอปดาวน์ปิดเอง
+document.getElementById('menu-btn').addEventListener('click', function (e) {
+  e.stopPropagation();
+  var dd = document.getElementById('menu-dropdown');
+  dd.hidden = !dd.hidden;
+});
+document.addEventListener('click', function (e) {
+  var dd = document.getElementById('menu-dropdown');
+  if (!dd || dd.hidden) return;
+  if (!e.target.closest('#menu-dropdown') && !e.target.closest('#menu-btn')) dd.hidden = true;
+});
+document.getElementById('menu-workload').addEventListener('click', function () {
+  document.getElementById('menu-dropdown').hidden = true;
+  openWorkloadModal();
+});
+document.getElementById('menu-history').addEventListener('click', function () {
+  document.getElementById('menu-dropdown').hidden = true;
+  openHistoryModal();
+});
+document.getElementById('menu-logout').addEventListener('click', function () {
+  document.getElementById('menu-dropdown').hidden = true;
+  if (!confirm('ออกจากระบบ?')) return;
+  sbSignOut();
 });
 
 // ---------- L2P4: login gate + realtime ----------
@@ -1896,15 +2133,6 @@ if (loginForm) {
         btn.disabled = false;
         errEl.textContent = 'เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง';
       });
-  });
-}
-
-// L2P4: ปุ่มออกจากระบบ
-var logoutBtn = document.getElementById('logout-btn');
-if (logoutBtn) {
-  logoutBtn.addEventListener('click', function () {
-    if (!confirm('ออกจากระบบ?')) return;
-    sbSignOut();
   });
 }
 

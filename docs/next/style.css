@@ -31,20 +31,17 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 
-body {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 0 0 96px;
-  min-height: 100vh;
+/* UX2: เอาเพดานกว้าง 640px ของ body เดิมออก (ทั้งหน้าจอตอนนี้คุมความกว้างเอง 2-3 คอลัมน์) — กันเลื่อน
+   แนวนอนที่ตัวหน้าเพจโดยตรงด้วย overflow-x:hidden (เนื้อหาข้างในเป็น flex/grid ที่ min-width:0 อยู่แล้ว) */
+html, body {
+  overflow-x: hidden;
 }
 
-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--bg);
-  padding: 14px 16px 8px;
-  border-bottom: 1px solid var(--border);
+body {
+  max-width: 100%;
+  margin: 0;
+  padding: 0 0 48px;
+  min-height: 100vh;
 }
 
 .loading-bar {
@@ -72,32 +69,161 @@ header {
   100% { transform: translateX(250%); }
 }
 
+/* ---------- UX2: topbar (row1 ปุ่มต่างๆ + row2 capture form) sticky ติดกันทั้งก้อน ---------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px 8px;
+}
+
+@media (min-width: 1024px) {
+  .topbar { padding: 10px 24px 8px; }
+}
+
+.topbar-row1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.topbar-spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+
 .status-line {
   font-size: 12px;
   color: var(--accent);
-  margin: -4px 0 8px;
+  margin: 4px 0 0;
+  max-width: 1400px;
+  margin-inline: auto;
 }
 
-.header-row {
+.tabs {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
+.tab-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-soft);
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.someday-btn,
 .dreams-btn {
-  border: 1px solid #d9a441;
-  background: #fbf1dc;
-  color: #8a6414;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-soft);
   border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 11.5px;
+  padding: 7px 10px;
+  font-size: 12.5px;
   font-weight: 700;
   cursor: pointer;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
-.dreams-panel {
+.someday-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dreams-btn {
+  border-color: #d9a441;
+  background: #fbf1dc;
+  color: #8a6414;
+}
+
+/* UX2 constraint: จอ 375px ต้องไม่มี scroll แนวนอน — ตัดคำ (Someday/Dream) ทิ้งเหลือแค่ไอคอน+ตัวเลข
+   ที่ความกว้างแคบมากๆ เช่น "🗂 13", "🌟" */
+@media (max-width: 400px) {
+  .someday-btn .btn-label,
+  .dreams-btn .btn-label {
+    display: none;
+  }
+  .someday-btn,
+  .dreams-btn {
+    padding: 7px 8px;
+  }
+}
+
+.menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.menu-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.menu-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  z-index: 30;
+  overflow: hidden;
+}
+
+.menu-dropdown button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 11px 14px;
+  font-size: 13.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.menu-dropdown button:hover {
+  background: var(--accent-soft);
+}
+
+.menu-dropdown #menu-logout {
+  border-top: 1px solid var(--border);
+  color: var(--text-soft);
+}
+
+.dreams-panel,
+.modal-panel {
   position: fixed;
   inset: 8% 16px auto 16px;
   max-height: 82vh;
@@ -110,9 +236,14 @@ header {
   z-index: 70;
 }
 
-.dreams-panel h3 {
+.dreams-panel h3,
+.modal-panel h3 {
   margin: 0 0 14px;
   font-size: 16px;
+  color: var(--text);
+}
+
+.dreams-panel h3 {
   color: #8a6414;
 }
 
@@ -192,64 +323,17 @@ header {
   border-color: #d9a441;
 }
 
-.app-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-soft);
-  margin: 0 0 10px;
-  letter-spacing: 0.02em;
-}
-
-.tabs {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.tab-btn {
-  flex: 1;
-  padding: 9px 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-soft);
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.tab-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.view-tabs {
-  display: flex;
-  gap: 6px;
-}
-
-.view-tabs .tab-btn {
-  font-size: 13px;
-  padding: 7px 8px;
-}
-
-main {
-  padding: 12px 16px 0;
-}
-
 /* UX1: <560px ฟอร์มขึ้น 2 แถว (row1 = ช่องพิมพ์ + ปุ่ม +, row2 = เลือกวัน + เลือก project ครึ่งๆ)
    ผ่าน flex-wrap + order (ควบคุมด้วย .row-break ที่บังคับตัดขึ้นบรรทัดใหม่) ตั้งแต่ 560px ขึ้นไปกลับมา
-   แถวเดียวเหมือนเดิม (ดู media query ท้ายไฟล์) */
+   แถวเดียวเหมือนเดิม (ดู media query ท้ายไฟล์) — UX2: ฟอร์มนี้ไม่ sticky แยกเองแล้ว อยู่ใน .topbar ที่
+   sticky ทั้งก้อนแทน */
 .capture-form {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 12px 12px;
-  position: sticky;
-  top: 96px;
-  z-index: 9;
-  background: var(--bg);
+  padding: 10px 0 2px;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
 .capture-form input {
@@ -336,6 +420,26 @@ main {
   }
 }
 
+.someday-form {
+  display: flex;
+  gap: 8px;
+}
+
+.someday-form input {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  font-size: 13.5px;
+  background: transparent;
+  color: var(--text);
+}
+
+.someday-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .someday-form .capture-submit-btn {
   width: 36px;
   height: 36px;
@@ -343,84 +447,19 @@ main {
   font-size: 17px;
 }
 
-.overdue-banner {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: #f5ead9;
-  color: #8a5a2b;
-  border: 1px solid #ecd9bd;
-  border-radius: 10px;
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 12px;
-}
-
-.workload-section,
-.history-section {
-  margin-bottom: 10px;
-}
-
-.workload-toggle {
-  border: none;
-  background: transparent;
-  color: var(--text-soft);
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 2px 0;
-  cursor: pointer;
-}
-
-.workload-bar {
-  display: flex;
-  height: 8px;
-  border-radius: 999px;
-  overflow: hidden;
-  margin: 8px 0 10px;
-  background: var(--border);
-}
-
-.workload-bar span {
-  height: 100%;
-}
-
-.workload-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.workload-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.workload-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.workload-label {
-  flex: 1;
-  color: var(--text);
-}
-
-.workload-value {
-  color: var(--text-soft);
-  font-size: 12px;
-}
-
+/* ---------- project filter chips: แถวเดียวเลื่อนแนวนอน อยู่ใต้ topbar เลย ไม่ sticky ---------- */
 .project-filter {
   display: flex;
   gap: 6px;
   overflow-x: auto;
-  padding-bottom: 4px;
-  margin-bottom: 10px;
+  flex-wrap: nowrap;
+  padding: 8px 16px 6px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  .project-filter { padding: 8px 24px 6px; }
 }
 
 .project-filter::-webkit-scrollbar {
@@ -446,56 +485,81 @@ main {
   color: #fff;
 }
 
-.week-nav {
+/* ---------- UX2: main / layout wrapper ---------- */
+main {
+  padding: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  main { padding: 20px 24px; }
+}
+
+.layout {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 2px 10px;
+  flex-direction: column;
+  gap: 22px;
 }
 
-.week-nav .range {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-soft);
+@media (min-width: 1024px) {
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+  }
+  .layout.someday-open {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, .9fr);
+  }
 }
 
-.icon-btn {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: 8px;
-  width: 32px;
-  height: 32px;
+.pane-title {
   font-size: 15px;
+  font-weight: 600;
   color: var(--text);
-  cursor: pointer;
+  margin: 0 0 10px 2px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
 }
 
-.today-jump {
-  border: 1px solid var(--accent);
-  color: var(--accent);
+.pane-count-pill {
   background: var(--accent-soft);
-  border-radius: 8px;
-  padding: 5px 10px;
+  color: var(--accent);
   font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
 }
 
+.pane-today,
+.pane-planner {
+  min-width: 0;
+}
+
+/* ---------- day-section: หนึ่งวัน (ใช้ทั้ง Today/Planner) — heading + task-list ---------- */
 .day-section {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
+}
+
+.day-section:last-child {
+  margin-bottom: 0;
 }
 
 .day-heading {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-soft);
-  margin: 0 0 6px 2px;
   display: flex;
   align-items: center;
   gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-soft);
+  margin: 0 0 6px 2px;
+  padding: 4px 2px;
+}
+
+.day-heading.collapsible {
+  cursor: pointer;
 }
 
 .day-heading.is-today {
@@ -509,43 +573,92 @@ main {
   background: var(--accent);
 }
 
+.day-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-soft);
+}
+
+.day-arrow {
+  font-size: 11px;
+  color: var(--text-soft);
+  width: 12px;
+  text-align: center;
+}
+
+.today-pill {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 1.6;
+}
+
+.day-heading.is-past {
+  opacity: .55;
+}
+
+.day-section.is-today {
+  background: var(--accent-soft);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+/* ---------- UX2 Task 4: รายการเป็นแถวคั่นเส้น แทนการ์ดกล่องมีขอบ/เงาแยกใบ ---------- */
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .task-card {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 10px 10px 12px;
-  box-shadow: var(--shadow);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 10px 12px;
+  box-shadow: none;
 }
 
+.task-card + .task-card {
+  border-top: 1px solid var(--border);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .task-card:hover {
+    background: var(--accent-soft);
+  }
+}
+
+/* ---------- handle ⠿: ไม่มีกล่อง/พื้นหลัง สีจาง พื้นที่กดพอเหมาะ (24px) ---------- */
 .drag-handle {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
   color: var(--text-soft);
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: -4px;
+  margin-top: 0;
   cursor: grab;
   touch-action: none;
 }
 
 .drag-handle:active {
-  background: var(--accent-soft);
   color: var(--accent);
 }
 
@@ -611,22 +724,30 @@ main {
   outline: none;
 }
 
+/* ---------- UX2 Task 4: project chip กลายเป็นจุดสี ● + ตัวหนังสือเล็กจาง แทนพื้นหลังสีเต็มแท่ง ---------- */
 .project-chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-top: 5px;
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  font-size: 12px;
+  padding: 0;
   border: none;
+  background: transparent;
+  color: var(--text-soft);
   cursor: pointer;
 }
 
+.project-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 .project-chip.empty {
-  background: transparent;
-  border: 1px dashed var(--border);
   color: var(--text-soft);
+  opacity: .75;
 }
 
 .subtask-toggle {
@@ -704,6 +825,7 @@ main {
   border-color: var(--accent);
 }
 
+/* ---------- UX2 Task 4: ปุ่ม action เหลือแค่ไอคอน ไม่มีกล่อง/ขอบ พื้นที่กดกว้างขึ้นเล็กน้อย (28px) ---------- */
 .task-actions {
   display: flex;
   gap: 4px;
@@ -715,8 +837,8 @@ main {
   background: transparent;
   color: var(--text-soft);
   font-size: 15px;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   cursor: pointer;
   border-radius: 6px;
 }
@@ -741,6 +863,9 @@ main {
   position: fixed;
   z-index: 200;
   pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   opacity: 0.96;
   transform: rotate(-1.5deg);
@@ -756,43 +881,102 @@ main {
 .empty-hint {
   font-size: 13px;
   color: var(--text-soft);
-  padding: 6px 2px 2px;
+  padding: 10px 12px;
 }
 
-.someday-section {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px dashed var(--border);
-}
-
-.someday-heading {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-soft);
-  margin: 0 0 8px 2px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.someday-form {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.someday-form input {
-  flex: 1;
-  padding: 9px 12px;
-  border: 1px dashed var(--border);
-  border-radius: 10px;
-  font-size: 13.5px;
+/* ---------- UX2: แถบพับ/กางงานที่เสร็จแล้วต่อวัน + ค้างจากวันก่อน ---------- */
+.done-toggle {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
   background: transparent;
-  color: var(--text);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
 }
 
-.someday-form input:focus {
-  outline: none;
-  border-color: var(--accent);
+.overdue-section {
+  margin-top: 14px;
+}
+
+.overdue-toggle {
+  padding: 4px 2px;
+}
+
+.overdue-task-list {
+  margin-top: 6px;
+}
+
+.overdue-day-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-soft);
+  padding: 8px 12px 0;
+}
+
+/* ---------- UX2: คอลัมน์/แผง Someday — desktop เป็นคอลัมน์ที่ 3, มือถือเป็น bottom sheet ---------- */
+.pane-someday {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.someday-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.someday-header .pane-title {
+  margin: 0;
+}
+
+.someday-close {
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 16px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.someday-close:active {
+  background: var(--accent-soft);
+}
+
+.someday-backdrop {
+  display: none;
+}
+
+@media (max-width: 1023.98px) {
+  .someday-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 80;
+  }
+  .pane-someday {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 75vh;
+    border-radius: 16px 16px 0 0;
+    z-index: 81;
+    overflow-y: auto;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.22);
+  }
 }
 
 /* dropdown popover สำหรับเลือก/เพิ่ม project */
@@ -912,71 +1096,6 @@ main {
   border-color: var(--done);
 }
 
-/* UX1: below 1024px the week view is always a single column Mon->Sun (no more 2-col zigzag at >=560px) */
-
-/* ---------- UX1: 7-column week on desktop ---------- */
-@media (min-width: 1024px) {
-  body.view-week {
-    max-width: 1680px;
-    padding-left: 24px;
-    padding-right: 24px;
-  }
-
-  /* เฉพาะ #board ที่ขยายเต็มความกว้างใหม่ — ส่วนอื่นๆ (header, capture form, banner ต่างๆ, someday) ยังคง
-     ความกว้างเดิม 640px จัดกึ่งกลางเหมือนโหมดปกติ */
-  body.view-week > header,
-  body.view-week > .capture-form,
-  body.view-week .overdue-banner,
-  body.view-week .workload-section,
-  body.view-week .history-section,
-  body.view-week .project-filter,
-  body.view-week .week-nav,
-  body.view-week .today-jump,
-  body.view-week .someday-section {
-    max-width: 640px;
-    margin-inline: auto;
-  }
-
-  .week-grid {
-    display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 10px;
-    align-items: start;
-  }
-
-  .week-grid--5 {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-
-  .week-grid .day-section {
-    min-height: 120px;
-  }
-}
-
-/* ---------- UX1: วันนี้ไฮไลต์ทั้งช่อง (ใช้ได้ทุกขนาดจอ ไม่ผูกกับ view-week) ---------- */
-.day-section.is-today {
-  background: var(--accent-soft);
-  border-radius: 12px;
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-  padding: 6px;
-}
-
-.today-pill {
-  display: inline-block;
-  background: var(--accent);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 7px;
-  border-radius: 999px;
-  line-height: 1.6;
-}
-
-.day-heading.is-past {
-  opacity: .55;
-}
-
 /* ---------- UX1: ปุ่มบนการ์ดโผล่เฉพาะตอน hover/focus บนอุปกรณ์ที่ hover ได้จริง (เมาส์) — จอสัมผัสเหมือนเดิม ---------- */
 @media (hover: hover) and (pointer: fine) {
   .task-card {
@@ -1003,22 +1122,7 @@ main {
   }
 }
 
-/* ---------- UX1: แถบพับ/กางงานที่เสร็จแล้วต่อวัน ---------- */
-.done-toggle {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  color: var(--text-soft);
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 4px 2px;
-  margin-top: 2px;
-  cursor: pointer;
-}
-
-/* ---------- L2P4: login overlay, logout button, test badge ---------- */
+/* ---------- L2P4: login overlay, test badge ---------- */
 .login-overlay {
   position: fixed;
   inset: 0;
@@ -1089,18 +1193,6 @@ main {
   cursor: default;
 }
 
-.logout-btn {
-  display: block;
-  margin: 24px auto 16px;
-  border: none;
-  background: transparent;
-  color: var(--text-soft);
-  font-size: 12.5px;
-  text-decoration: underline;
-  cursor: pointer;
-  padding: 6px;
-}
-
 .test-badge {
   position: fixed;
   left: 10px;
@@ -1113,20 +1205,4 @@ main {
   font-size: 10.5px;
   font-weight: 700;
   box-shadow: var(--shadow);
-}
-
-/* UX1 (review): คอลัมน์ Week บนจอกว้างแคบ (~185px) — ย่อ handle ⠿ และระยะในการ์ด ให้ชื่องานได้พื้นที่มากขึ้น
-   (เฉพาะ ≥1024px ใน Week view เท่านั้น มือถือ/Today view ไม่กระทบ) */
-@media (min-width: 1024px) {
-  body.view-week .week-grid .task-card {
-    gap: 7px;
-    padding: 8px 8px 8px 8px;
-  }
-  body.view-week .week-grid .drag-handle {
-    width: 24px;
-    height: 28px;
-    font-size: 14px;
-    border-radius: 8px;
-    margin-top: -2px;
-  }
 }
