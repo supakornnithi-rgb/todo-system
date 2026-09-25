@@ -27,6 +27,41 @@
   // ต้องตรงกับ byOrder ฝั่ง docs/app.js (app.js:409) เป๊ะ — ใช้ createdAt เป็น tie-breaker ตอน order เท่ากัน
   function byOrder(a, b) { return (a.order || 0) - (b.order || 0) || byCreatedAt(a, b); }
 
+  // UX3 Task 5: จันทร์ของสัปดาห์ที่ iso อยู่ใน (ปฏิทินท้องถิ่นล้วนๆ เหมือน mondayOf ใน docs/next/app.js
+  // แต่เป็น local copy ของ adapter เอง ตามธรรมเนียมไฟล์นี้ที่ไม่พึ่ง global function จาก app.js เลย)
+  function mondayOfLocal(iso) {
+    var d = parseIsoLocal(iso);
+    var day = d.getDay();
+    var diff = (day === 0) ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    return toIsoLocal(d);
+  }
+
+  // buildWeekly: นับ task ที่เสร็จ (rows: [{completed_at}]) ลงถัง 8 สัปดาห์ล่าสุด (รวมสัปดาห์นี้) จันทร์
+  // เป็นวันแรกของสัปดาห์เสมอ ตามปฏิทินท้องถิ่น — คืนลิสต์เรียง เก่า -> ใหม่ (สัปดาห์นี้อยู่ตัวสุดท้ายเสมอ)
+  // นับด้วยวันที่ท้องถิ่นของ completed_at (new Date(...).getFullYear/Month/Date คืนค่าตาม timezone ของ
+  // runtime ที่รันโค้ดนี้อยู่ ซึ่งตรงกับ "แปลงเป็นวันที่ท้องถิ่น" ตามที่แผนระบุ)
+  function buildWeekly(rows, todayIsoStr, weeks) {
+    weeks = weeks || 8;
+    var currentWeekStart = mondayOfLocal(todayIsoStr);
+    var buckets = [];
+    for (var i = weeks - 1; i >= 0; i--) {
+      buckets.push({ weekStart: addDaysIsoLocal(currentWeekStart, -7 * i), count: 0 });
+    }
+    var indexByWeekStart = {};
+    buckets.forEach(function (b, idx) { indexByWeekStart[b.weekStart] = idx; });
+
+    (rows || []).forEach(function (r) {
+      if (!r.completed_at) return;
+      var localDate = new Date(r.completed_at);
+      var localIso = toIsoLocal(localDate);
+      var ws = mondayOfLocal(localIso);
+      if (indexByWeekStart.hasOwnProperty(ws)) buckets[indexByWeekStart[ws]].count++;
+    });
+
+    return buckets;
+  }
+
   // ---------- pure mapping helpers (export ที่ window.SbMap ให้ node test เรียกตรงได้) ----------
   function rowToSubtask(row) {
     return {
@@ -126,6 +161,7 @@
     rowToDream: rowToDream,
     buildBoard: buildBoard,
     buildHistory: buildHistory,
+    buildWeekly: buildWeekly,
     iso: iso
   };
 
@@ -208,13 +244,17 @@
       });
   }
 
+  // UX3 Task 5: เพิ่ม completed_at เข้า select (เดิมเอาแค่ project) เพื่อคำนวณ weekly ด้วย — total/stats
+  // ยังมาจาก buildHistory เดิมเป๊ะ ไม่เปลี่ยน แค่เพิ่ม field weekly ต่อท้ายผลลัพธ์เดียวกัน
   function actionGetProjectHistory(params) {
     var workspace = params.workspace;
     return paginateAll(function (from, to) {
-      return sb.from('tasks').select('project').eq('workspace', workspace).eq('done', true).range(from, to);
+      return sb.from('tasks').select('project,completed_at').eq('workspace', workspace).eq('done', true).range(from, to);
     }).then(function (res) {
       if (!res.ok) return res;
-      return { ok: true, data: buildHistory(res.data) };
+      var history = buildHistory(res.data);
+      history.weekly = buildWeekly(res.data, todayIsoLocal(), 8);
+      return { ok: true, data: history };
     });
   }
 

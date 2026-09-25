@@ -36,6 +36,37 @@ function colorForProject(name) {
   return PROJECT_COLORS[hashString(name) % PROJECT_COLORS.length];
 }
 
+// ค่าคงที่ "ไม่มี project" ใช้ร่วมกันทั้งสถิติงานค้าง/ประวัติ/กราฟ (ย้ายขึ้นมาไว้บนสุดตั้งแต่ UX3 เพราะ
+// projectChartColor ในชุดเครื่องมือกราฟด้านล่างต้องใช้ค่านี้ตั้งแต่ต้นไฟล์)
+var NO_PROJECT_LABEL = '(ไม่มี project)';
+var NO_PROJECT_COLOR = '#a8a196';
+
+// UX3: โทนสีชุดใหม่สำหรับกราฟ+จุดสี project — ผ่านการเช็ค colorblind-safety (ΔE ระหว่างสีติดกันไม่ต่ำ
+// เกินไปทั้งแบบ deutan และสายตาปกติ) ต่างจาก PROJECT_COLORS เดิม (hash ชื่อ -> พาสเทล ยังใช้กับ filter
+// chip เหมือนเดิม แยกจากชุดนี้โดยสิ้นเชิง) ตำแหน่งสีมาจาก "index ของชื่อใน master list" ไม่ใช่อันดับ
+// (rank) ในกราฟ ให้จุดสีบนการ์ดงานกับ segment ในกราฟตรงกันเสมอไม่ว่าจะเรียงลำดับยังไงในแต่ละที่ที่ใช้
+var CHART_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+
+// projectChartColor: ไม่มี project หรือชื่อที่หาไม่เจอใน master list เลย (projectList) ได้สีเทากลางเสมอ
+function projectChartColor(name, projectList) {
+  if (!name || name === NO_PROJECT_LABEL) return NO_PROJECT_COLOR;
+  var idx = (projectList || []).indexOf(name);
+  if (idx === -1) return NO_PROJECT_COLOR;
+  return CHART_PALETTE[idx % CHART_PALETTE.length];
+}
+
+// foldOthers: segments เกิน max ตัว -> เก็บ (max-1) ตัวที่ value เยอะสุด ที่เหลือรวมเป็น "อื่นๆ" สีเทา
+// ไม่เกิน max เลย คืนของเดิมตรงๆ ไม่ยุ่ง (ไม่ sort ด้วย เผื่อผู้เรียกจงใจเรียงมาแบบอื่นแล้ว)
+function foldOthers(segments, max) {
+  if (!segments || segments.length <= max) return segments;
+  var sorted = segments.slice().sort(function (a, b) { return b.value - a.value; });
+  var kept = sorted.slice(0, max - 1);
+  var rest = sorted.slice(max - 1);
+  var restSum = rest.reduce(function (sum, s) { return sum + s.value; }, 0);
+  kept.push({ label: 'อื่นๆ', value: restSum, color: NO_PROJECT_COLOR });
+  return kept;
+}
+
 // workspace ที่ทำงานแค่ จันทร์-ศุกร์ (ไม่มีวันเสาร์-อาทิตย์ในระบบเลย) — งานที่เลยวันศุกร์ยังไม่เสร็จ
 // จะถูก carry-over ไปวันจันทร์ถัดไปเองอยู่แล้วโดย trigger รายสัปดาห์ที่มีอยู่เดิม (เช็คแค่ weekStart
 // เก่ากว่าสัปดาห์นี้ ไม่สนว่าอยู่วันไหนในสัปดาห์นั้น) เลยไม่ต้องแก้ backend เพิ่ม แค่ฝั่งแสดงผล/นำทาง
@@ -176,6 +207,208 @@ function overdueTasks(board) {
     }
   });
   return out;
+}
+
+// ---------- UX3: ชุดเครื่องมือกราฟ (pure เท่าที่ทำได้) — วาด SVG มือเปล่า ไม่พึ่ง library ใดๆ ----------
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function polarToCartesian(cx, cy, r, angleDeg) {
+  var rad = (angleDeg - 90) * Math.PI / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+// donutSegmentPath: path รูป "โดนัท" (washer) ระหว่างมุม startAngle..endAngle (องศา ตามเข็มนาฬิกาจาก
+// 12 นาฬิกา) — ใช้ arc ใหญ่ (large-arc-flag) เมื่อช่วงมุมเกิน 180°
+function donutSegmentPath(cx, cy, rOuter, rInner, startAngle, endAngle) {
+  var largeArc = (endAngle - startAngle) > 180 ? 1 : 0;
+  var startOuter = polarToCartesian(cx, cy, rOuter, endAngle);
+  var endOuter = polarToCartesian(cx, cy, rOuter, startAngle);
+  var startInner = polarToCartesian(cx, cy, rInner, startAngle);
+  var endInner = polarToCartesian(cx, cy, rInner, endAngle);
+  return [
+    'M', startOuter.x, startOuter.y,
+    'A', rOuter, rOuter, 0, largeArc, 0, endOuter.x, endOuter.y,
+    'L', startInner.x, startInner.y,
+    'A', rInner, rInner, 0, largeArc, 1, endInner.x, endInner.y,
+    'Z'
+  ].join(' ');
+}
+
+// donutChartSvg: segments [{label,value,color}] (value > 0) — 180x180, รัศมีนอก 80/ใน 52, เส้นคั่น 2px
+// สี surface ระหว่างชิ้น กลางวงแสดงยอดรวม (22px/600) + caption (12px จาง) ชิ้นเดียวสัดส่วน 100% ยังต้อง
+// วาดเป็นวงเต็ม (หัก epsilon กันจุดเริ่ม-จบชนกันพอดีจน arc ยุบหาย)
+function donutChartSvg(segments, opts) {
+  opts = opts || {};
+  var size = 180, cx = 90, cy = 90, rOuter = 80, rInner = 52;
+  var gapColor = opts.gapColor || 'var(--surface)';
+  var caption = opts.caption || '';
+  var total = (segments || []).reduce(function (s, x) { return s + x.value; }, 0);
+
+  var paths = '';
+  var angle = 0;
+  (segments || []).forEach(function (seg) {
+    var span = total > 0 ? (seg.value / total) * 360 : 0;
+    var startAngle = angle;
+    var endAngle = startAngle + span;
+    var drawEnd = span >= 359.99 ? startAngle + 359.99 : endAngle;
+    if (span > 0) {
+      var d = donutSegmentPath(cx, cy, rOuter, rInner, startAngle, drawEnd);
+      paths += '<path d="' + d + '" fill="' + seg.color + '" stroke="' + gapColor + '" stroke-width="2" ' +
+        'stroke-linejoin="round" data-label="' + escapeHtml(seg.label) + '" data-value="' + seg.value + '"></path>';
+    }
+    angle = endAngle;
+  });
+
+  var centerText =
+    '<text x="' + cx + '" y="' + (cy - 2) + '" text-anchor="middle" font-size="22" font-weight="600" fill="var(--text)">' + total + '</text>' +
+    '<text x="' + cx + '" y="' + (cy + 16) + '" text-anchor="middle" font-size="12" fill="var(--text-soft)">' + escapeHtml(caption) + '</text>';
+
+  return '<svg viewBox="0 0 ' + size + ' ' + size + '" width="100%" height="' + size + '" role="img">' + paths + centerText + '</svg>';
+}
+
+// roundedTopBarPath: แท่งขอบมนแค่บนสุด 4px ยึด baseline ไว้เสมอ (path เอง ไม่ใช้ rx ของ rect ทั้งใบ ซึ่ง
+// จะมนทั้ง 4 มุม) สูง 0 (value=0) คืนสตริงว่าง ไม่วาดอะไร กัน path เพี้ยน
+function roundedTopBarPath(x, yTop, width, baseline, radius) {
+  var h = baseline - yTop;
+  if (h <= 0 || width <= 0) return '';
+  var r = Math.min(radius, width / 2, h);
+  return [
+    'M', x, baseline,
+    'L', x, yTop + r,
+    'Q', x, yTop, x + r, yTop,
+    'L', x + width - r, yTop,
+    'Q', x + width, yTop, x + width, yTop + r,
+    'L', x + width, baseline,
+    'Z'
+  ].join(' ');
+}
+
+// truncateBarLabel: กันป้ายแกน X ทับกัน — ตัดความยาวคร่าวๆ ตามความกว้างแท่งที่คำนวณได้จริง (~7px/ตัวอักษร
+// ที่ font-size 11px)
+function truncateBarLabel(label, barWidth) {
+  var maxChars = Math.max(1, Math.floor(barWidth / 7));
+  var s = String(label == null ? '' : label);
+  if (s.length <= maxChars) return s;
+  return maxChars <= 1 ? s.slice(0, 1) : s.slice(0, maxChars - 1) + '…';
+}
+
+// barChartSvg: bars [{label,value,highlight}] ซีรีส์เดียว ไม่มี legend — viewBox กว้าง opts.width
+// (default 320) สูงคงที่ 160 เสมอ เส้น grid แนวนอนจาง 3 เส้น+ป้ายตัวเลขซ้าย ค่า 0 ทุกแท่งต้องไม่มี NaN
+// โผล่ในผลลัพธ์เลย (การ์ดสูง 0 ไม่วาด path แต่ยังมี hit-rect ให้ tooltip ปกติ)
+function barChartSvg(bars, opts) {
+  opts = opts || {};
+  bars = bars || [];
+  var width = opts.width || 320, height = 160;
+  var padLeft = 30, padRight = 8, padTop = 20, padBottom = 22;
+  var plotW = Math.max(0, width - padLeft - padRight);
+  var plotH = Math.max(0, height - padTop - padBottom);
+  var baseline = padTop + plotH;
+  var n = bars.length;
+  var rawMax = 0;
+  bars.forEach(function (b) { if (b.value > rawMax) rawMax = b.value; });
+  // ปัดค่าสูงสุดของแกนขึ้นเป็นเลขคู่ เส้นกลางจะได้เป็นจำนวนเต็มตรงตำแหน่งจริง (เดิมปัดเฉพาะป้าย
+  // ทำให้เส้นที่เขียนว่า "2" จริงๆ อยู่ที่ 1.5 — แท่งค่า 2 เลยสูงเกินเส้น 2)
+  var maxVal = rawMax > 0 ? Math.ceil(rawMax / 2) * 2 : 0;
+
+  var gap = 4;
+  var barW = n > 0 ? Math.max(2, (plotW - gap * (n - 1)) / n) : 0;
+
+  var grid = '';
+  var gridCount = 3;
+  for (var i = 0; i < gridCount; i++) {
+    var frac = gridCount > 1 ? i / (gridCount - 1) : 0;
+    var y = padTop + plotH * frac;
+    var val = maxVal > 0 ? maxVal * (1 - frac) : 0;
+    grid += '<line x1="' + padLeft + '" y1="' + y + '" x2="' + (padLeft + plotW) + '" y2="' + y + '" stroke="var(--border)" stroke-width="1"></line>';
+    grid += '<text x="' + (padLeft - 6) + '" y="' + (y + 3) + '" font-size="11" fill="var(--text-soft)" text-anchor="end">' + val + '</text>';
+  }
+
+  var barsSvg = '', valueLabels = '', xLabels = '', hitRects = '';
+  bars.forEach(function (b, i) {
+    var x = padLeft + i * (barW + gap);
+    var h = maxVal > 0 ? (b.value / maxVal) * plotH : 0;
+    var yTop = baseline - h;
+    var opacity = b.highlight ? 1 : 0.55;
+    var d = roundedTopBarPath(x, yTop, barW, baseline, 4);
+    if (d) {
+      barsSvg += '<path d="' + d + '" fill="var(--accent)" fill-opacity="' + opacity + '"></path>';
+    }
+    if (b.value > 0 && n <= 8) {
+      valueLabels += '<text x="' + (x + barW / 2) + '" y="' + (yTop - 4) + '" font-size="11" fill="var(--text-soft)" text-anchor="middle">' + b.value + '</text>';
+    }
+    xLabels += '<text x="' + (x + barW / 2) + '" y="' + (height - 6) + '" font-size="11" fill="var(--text-soft)" text-anchor="middle">' +
+      escapeHtml(truncateBarLabel(b.label, barW)) + '</text>';
+    hitRects += '<rect x="' + x + '" y="' + padTop + '" width="' + barW + '" height="' + plotH + '" fill="transparent" ' +
+      'data-label="' + escapeHtml(b.label) + '" data-value="' + b.value + '"></rect>';
+  });
+
+  return '<svg viewBox="0 0 ' + width + ' ' + height + '" width="100%" height="' + height + '" role="img">' +
+    grid + barsSvg + valueLabels + xLabels + hitRects + '</svg>';
+}
+
+// legendHtml: จุดสี · label · จำนวน · % — เป็น "ตาราง" สำรองสำหรับ accessibility ด้วย ตัวหนังสือใช้สี
+// ข้อความปกติเสมอ ไม่เอาสีของ series เองมาแต่งตัวหนังสือ
+function legendHtml(segments, total) {
+  return (segments || []).map(function (s) {
+    var pct = total > 0 ? Math.round(s.value / total * 100) : 0;
+    return '<div class="chart-legend-row">' +
+      '<span class="chart-legend-dot" style="background:' + s.color + '"></span>' +
+      '<span class="chart-legend-label">' + escapeHtml(s.label) + '</span>' +
+      '<span class="chart-legend-value">' + s.value + ' · ' + pct + '%</span>' +
+      '</div>';
+  }).join('');
+}
+
+// attachChartTooltip: tooltip เดียวใช้ร่วมกันทั้ง modal ต่อ [data-label] mark ที่เจอ (path โดนัท / hit-rect
+// ของแท่ง) hover จริงบนเมาส์ (pointermove) และแตะบนจอสัมผัส (click ครอบคลุมทั้ง touch/mouse อยู่แล้ว) —
+// total ของ % เอาจาก data-total ของ .chart-block ที่ครอบ mark นั้นอยู่ (ผลรวมทั้งกราฟนั้นๆ) tooltip อยู่
+// ใน panel เอง (position:absolute) ไม่ใช้ position:fixed นอก modal ตามข้อกำหนด
+function ensureChartTooltip(panel) {
+  var tip = panel.querySelector('.chart-tooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.className = 'chart-tooltip';
+    tip.hidden = true;
+    panel.appendChild(tip);
+  }
+  return tip;
+}
+
+function attachChartTooltip(panel) {
+  var tip = ensureChartTooltip(panel);
+
+  function findMark(target) {
+    return target && target.closest ? target.closest('[data-label]') : null;
+  }
+  function showTip(mark, clientX, clientY) {
+    var label = mark.getAttribute('data-label');
+    var value = Number(mark.getAttribute('data-value')) || 0;
+    var block = mark.closest('.chart-block');
+    var total = block ? Number(block.getAttribute('data-total')) || 0 : 0;
+    var pct = total > 0 ? Math.round(value / total * 100) : 0;
+    tip.textContent = label + ': ' + value + ' (' + pct + '%)';
+    tip.hidden = false;
+    var rect = panel.getBoundingClientRect();
+    tip.style.left = Math.max(4, clientX - rect.left + 12) + 'px';
+    tip.style.top = Math.max(4, clientY - rect.top - 12) + 'px';
+  }
+  function hideTip() { tip.hidden = true; }
+
+  panel.addEventListener('pointermove', function (e) {
+    var mark = findMark(e.target);
+    if (mark) showTip(mark, e.clientX, e.clientY); else hideTip();
+  });
+  panel.addEventListener('pointerleave', function () { hideTip(); });
+  // จอสัมผัส: แตะบน mark โชว์ (pointerdown บนมือถือมักไม่ตามด้วย pointermove จริงจนกว่าจะขยับนิ้ว) แตะที่
+  // อื่นในกราฟซ่อน — click ครอบคลุมทั้งคลิกเมาส์และแตะจริงบนจอสัมผัสอยู่แล้ว
+  panel.addEventListener('click', function (e) {
+    var mark = findMark(e.target);
+    if (mark) showTip(mark, e.clientX, e.clientY); else hideTip();
+  });
 }
 
 // ---------- API ----------
@@ -466,7 +699,8 @@ var state = {
   somedayOpen: false, // UX2: เปิด/ปิดคอลัมน์ (desktop) หรือ bottom sheet (mobile) ของ Someday
   overdueExpanded: false, // UX2: กาง/พับส่วน "ค้างจากวันก่อน" ใน Today pane — ไม่ persist, พับไว้ก่อนเสมอ
   historyLoading: false,
-  historyData: null, // {total, stats:[{name,count,pct}]} — โหลดตอนกดเปิด modal ประวัติครั้งแรกของแต่ละ workspace เท่านั้น
+  historyData: null, // {total, stats:[{name,count,pct}], weekly:[{weekStart,count}]} — โหลดตอนกดเปิด modal ประวัติครั้งแรกของแต่ละ workspace
+  historyLoadedAt: null, // UX3: timestamp (ms) ของครั้งล่าสุดที่โหลดสำเร็จ — เปิด modal ซ้ำเกิน 5 นาทีให้โหลดใหม่ กันเลขรายสัปดาห์ค้าง
   dreamsData: null, // ลิสต์ TRUE DREAM — แยกอิสระจาก workspace/task ทั้งหมด โหลดครั้งแรกตอนกดเปิดปุ่ม
   dreamsLoading: false
 };
@@ -549,10 +783,23 @@ function refreshUI() {
   renderProjectFilter();
   renderCaptureProjectOptions();
   updateSomedayBtn();
+  updateStatsButtons();
   renderLayout();
-  // ถ้า modal ภาพรวมงานค้าง/ประวัติเปิดค้างอยู่ ให้วาดเนื้อหาใหม่ตามข้อมูลล่าสุดด้วย
+  // ถ้า modal งานค้าง/งานเสร็จเปิดค้างอยู่ ให้วาดเนื้อหาใหม่ตามข้อมูลล่าสุดด้วย
   if (document.getElementById('workload-modal')) openWorkloadModal();
   if (document.getElementById('history-modal')) openHistoryModal();
+}
+
+// UX3: อัปเดตตัวเลขบนปุ่ม "📊 งานค้าง N" ทุกครั้งที่ render — N ต้องตรงกับยอดรวมที่ใน popup งานค้างเป๊ะ
+// (ผลรวมของ computeWorkloadStats ทั้งก้อน ไม่ใช่แค่ 4 stat tile ที่เห็น เพราะ tile คุมแค่บางช่วงวัน)
+function totalOpenTaskCount() {
+  if (!state.board) return 0;
+  return computeWorkloadStats().reduce(function (sum, s) { return sum + s.count; }, 0);
+}
+
+function updateStatsButtons() {
+  var btn = document.getElementById('stats-open-btn');
+  if (btn) btn.textContent = '📊 งานค้าง ' + totalOpenTaskCount();
 }
 
 // ---------- toast ----------
@@ -924,10 +1171,11 @@ function taskCardEl(task, opts) {
   chip.type = 'button';
   chip.className = 'project-chip' + (task.project ? '' : ' empty');
   if (task.project) {
-    var chipColor = colorForProject(task.project);
+    // UX3 Task 6: จุดสีใช้ projectChartColor (ตำแหน่งจาก master list, ตรงกับกราฟ) แทน colorForProject
+    // (hash พาสเทล) เดิม — colorForProject ยังใช้กับ filter chip/project picker เหมือนเดิม แยกจากกัน
     var dot = document.createElement('span');
     dot.className = 'project-dot';
-    dot.style.background = chipColor.fg;
+    dot.style.background = projectChartColor(task.project, (state.board && state.board.projects) || []);
     chip.appendChild(dot);
     chip.appendChild(document.createTextNode(task.project));
   } else {
@@ -1401,12 +1649,10 @@ function renderCaptureProjectOptions() {
   select.value = (stored && projects.indexOf(stored) !== -1) ? stored : '';
 }
 
-// ---------- UX2: ภาพรวมงานค้าง/ประวัติงานเสร็จ ย้ายเข้า modal ที่เปิดจากเมนู ≡ (เดิม UX1/L2P4 เป็นแถบ
-// พับ/กางอยู่หน้าเพจตรงๆ) — computeWorkloadStats ยังคำนวณจาก state.board ทั้งก้อนเหมือนเดิม (รวม 14 วัน
-// ในหน้าต่างบอร์ดตอนนี้ + someday) ไม่ได้ผูกกับ "สัปดาห์ที่กำลังดู" อีกต่อไปเพราะไม่มีมุมมองสัปดาห์แล้ว ----------
-var NO_PROJECT_LABEL = '(ไม่มี project)';
-var NO_PROJECT_COLOR = '#a8a196';
-
+// ---------- UX2/UX3: ภาพรวมงานค้าง/ประวัติงานเสร็จ ย้ายเข้า modal ที่เปิดจากปุ่มสถิติ (เดิม UX1/L2P4
+// เป็นแถบพับ/กางอยู่หน้าเพจตรงๆ, UX2 ย้ายเข้าเมนู ≡, UX3 ย้ายมาเป็นปุ่มลอยเห็นตลอด) —
+// computeWorkloadStats ยังคำนวณจาก state.board ทั้งก้อนเหมือนเดิม (รวม 14 วันในหน้าต่างบอร์ดตอนนี้ +
+// someday) ไม่ได้ผูกกับ "สัปดาห์ที่กำลังดู" อีกต่อไปเพราะไม่มีมุมมองสัปดาห์แล้ว ----------
 function computeWorkloadStats() {
   var pending = [];
   state.board.days.forEach(function (d) { d.tasks.forEach(function (t) { if (!t.done) pending.push(t); }); });
@@ -1424,55 +1670,82 @@ function computeWorkloadStats() {
     .sort(function (a, b) { return b.count - a.count; });
 }
 
-// สร้างแท่งสัดส่วน + ลิสต์ตัวเลข ใช้ร่วมกันทั้ง modal ภาพรวมงานค้าง และ modal ประวัติ
-function buildStatsContent(stats) {
-  var wrap = document.createElement('div');
-  if (!stats || stats.length === 0) {
-    var hint = document.createElement('p');
-    hint.className = 'empty-hint';
-    hint.textContent = 'ไม่มีข้อมูล';
-    wrap.appendChild(hint);
-    return wrap;
-  }
-
-  var bar = document.createElement('div');
-  bar.className = 'workload-bar';
-  stats.forEach(function (s) {
-    var seg = document.createElement('span');
-    seg.style.width = s.pct + '%';
-    seg.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
-    bar.appendChild(seg);
+// segmentsFromStats: [{name,count,pct}] (จาก computeWorkloadStats/historyData.stats) -> segments กราฟ
+// [{label,value,color}] ใช้ projectChartColor เสมอ (ไม่ใช่ colorForProject พาสเทลเดิม) ให้สีตรงกับจุด
+// บนการ์ดงาน
+function segmentsFromStats(stats, projectList) {
+  return (stats || []).map(function (s) {
+    return { label: s.name, value: s.count, color: projectChartColor(s.name === NO_PROJECT_LABEL ? '' : s.name, projectList) };
   });
-  wrap.appendChild(bar);
-
-  var list = document.createElement('div');
-  list.className = 'workload-list';
-  stats.forEach(function (s) {
-    var row = document.createElement('div');
-    row.className = 'workload-row';
-
-    var dot = document.createElement('span');
-    dot.className = 'workload-dot';
-    dot.style.background = s.name === NO_PROJECT_LABEL ? NO_PROJECT_COLOR : colorForProject(s.name).fg;
-
-    var label = document.createElement('span');
-    label.className = 'workload-label';
-    label.textContent = s.name;
-
-    var value = document.createElement('span');
-    value.className = 'workload-value';
-    value.textContent = s.count + ' งาน · ' + s.pct + '%';
-
-    row.appendChild(dot);
-    row.appendChild(label);
-    row.appendChild(value);
-    list.appendChild(row);
-  });
-  wrap.appendChild(list);
-
-  return wrap;
 }
 
+// donutWithLegendEl: บล็อกกราฟโดนัท+legend มาตรฐาน ใช้ร่วมกันทั้ง popup งานค้าง/งานเสร็จ — data-total บน
+// .chart-block ให้ attachChartTooltip คำนวณ % ได้ (ดู attachChartTooltip ด้านบน)
+function donutWithLegendEl(titleText, segments, total, caption) {
+  var block = document.createElement('div');
+  block.className = 'chart-block';
+  block.setAttribute('data-total', String(total));
+
+  var title = document.createElement('p');
+  title.className = 'chart-title';
+  title.textContent = titleText;
+  block.appendChild(title);
+
+  var row = document.createElement('div');
+  row.className = 'chart-donut-row';
+
+  var svgWrap = document.createElement('div');
+  svgWrap.className = 'chart-donut-svg-wrap';
+  svgWrap.innerHTML = donutChartSvg(segments, { caption: caption });
+  row.appendChild(svgWrap);
+
+  var legend = document.createElement('div');
+  legend.className = 'chart-legend';
+  legend.innerHTML = legendHtml(segments, total);
+  row.appendChild(legend);
+
+  block.appendChild(row);
+  return block;
+}
+
+// barBlockEl: บล็อกกราฟแท่งมาตรฐาน (หัวข้อ + SVG) ใช้ร่วมกันทั้ง 2 popup
+function barBlockEl(titleText, bars) {
+  var block = document.createElement('div');
+  block.className = 'chart-block';
+  var total = bars.reduce(function (s, b) { return s + b.value; }, 0);
+  block.setAttribute('data-total', String(total));
+
+  var title = document.createElement('p');
+  title.className = 'chart-title';
+  title.textContent = titleText;
+  block.appendChild(title);
+
+  var svgWrap = document.createElement('div');
+  svgWrap.className = 'chart-bar-svg-wrap';
+  // viewBox กว้างเท่าพื้นที่จริงใน popup (ประมาณ) — ถ้าใช้ 320 ตายตัวแล้วยืดเต็ม popup ตัวหนังสือจะขยาย
+  // ตามและป้ายวันถูกตัด ("วันน…") บนจอกว้าง
+  var chartW = window.innerWidth >= 640 ? 520 : Math.max(260, window.innerWidth - 70);
+  svgWrap.innerHTML = barChartSvg(bars, { width: chartW });
+  block.appendChild(svgWrap);
+
+  return block;
+}
+
+function statTileEl(label, value) {
+  var tile = document.createElement('div');
+  tile.className = 'stat-tile';
+  var lab = document.createElement('div');
+  lab.className = 'stat-tile-label';
+  lab.textContent = label;
+  var val = document.createElement('div');
+  val.className = 'stat-tile-value';
+  val.textContent = value;
+  tile.appendChild(lab);
+  tile.appendChild(val);
+  return tile;
+}
+
+// ---------- UX3 Task 4: popup "งานค้าง" (แทนที่เนื้อหาเดิมของ openWorkloadModal ทั้งหมด) ----------
 function openWorkloadModal() {
   closeWorkloadModal();
   if (!state.board) return;
@@ -1483,21 +1756,52 @@ function openWorkloadModal() {
   backdrop.addEventListener('click', closeWorkloadModal);
 
   var panel = document.createElement('div');
-  panel.className = 'modal-panel';
+  panel.className = 'modal-panel chart-modal';
   panel.id = 'workload-modal';
   var h3 = document.createElement('h3');
-  h3.textContent = 'ภาพรวมงานค้าง';
+  h3.textContent = 'งานค้าง · ' + state.workspace;
   panel.appendChild(h3);
 
+  var board = state.board;
+  var weekdaysOnly = isWeekdaysOnly(board.workspace);
+  var overdueCount = overdueTasks(board).length;
+  var todayDay = board.days.find(function (d) { return d.date === board.today; });
+  var todayOpen = todayDay ? todayDay.tasks.filter(function (t) { return !t.done; }).length : 0;
+  var next7 = rollingDays(board.today, 6, weekdaysOnly);
+  var next7Open = next7.reduce(function (sum, date) {
+    var d = board.days.find(function (x) { return x.date === date; });
+    return sum + (d ? d.tasks.filter(function (t) { return !t.done; }).length : 0);
+  }, 0);
+  var somedayOpen = board.someday.filter(function (t) { return !t.done; }).length;
   var stats = computeWorkloadStats();
-  var total = stats.reduce(function (s, x) { return s + x.count; }, 0);
-  if (total === 0) {
+  var totalOpen = stats.reduce(function (s, x) { return s + x.count; }, 0);
+
+  if (totalOpen === 0) {
     var hint = document.createElement('p');
     hint.className = 'empty-hint';
-    hint.textContent = 'ไม่มีงานค้างเลย 🎉';
+    hint.textContent = 'ไม่มีงานค้าง 🎉';
     panel.appendChild(hint);
   } else {
-    panel.appendChild(buildStatsContent(stats));
+    var tiles = document.createElement('div');
+    tiles.className = 'stat-tiles';
+    tiles.appendChild(statTileEl('ค้างจากวันก่อน', overdueCount));
+    tiles.appendChild(statTileEl('วันนี้', todayOpen));
+    tiles.appendChild(statTileEl('7 วันข้างหน้า', next7Open));
+    tiles.appendChild(statTileEl('Someday', somedayOpen));
+    panel.appendChild(tiles);
+
+    var segments = foldOthers(segmentsFromStats(stats, board.projects), 8);
+    panel.appendChild(donutWithLegendEl('แยกตาม project', segments, totalOpen, 'งานค้าง'));
+
+    var tomorrow = addDaysIso(board.today, 1);
+    var barDays = [board.today].concat(next7);
+    var bars = barDays.map(function (date, i) {
+      var d = board.days.find(function (x) { return x.date === date; });
+      var openCount = d ? d.tasks.filter(function (t) { return !t.done; }).length : 0;
+      var label = (i === 0) ? 'วันนี้' : ((date === tomorrow) ? 'พรุ่งนี้' : DAY_NAMES[parseIso(date).getDay()]);
+      return { label: label, value: openCount, highlight: i === 0 };
+    });
+    panel.appendChild(barBlockEl('ภาระงานรายวัน', bars));
   }
 
   var closeBtn = document.createElement('button');
@@ -1508,6 +1812,7 @@ function openWorkloadModal() {
 
   document.body.appendChild(backdrop);
   document.body.appendChild(panel);
+  attachChartTooltip(panel);
 }
 
 function closeWorkloadModal() {
@@ -1517,9 +1822,11 @@ function closeWorkloadModal() {
   if (p) p.remove();
 }
 
-// ---------- ประวัติงานเสร็จแล้ว (ทุกสัปดาห์ย้อนหลัง ไม่ใช่แค่หน้าต่างบอร์ดที่โหลดอยู่) ----------
-// โหลดแบบ lazy ตอนกดเปิด modal ครั้งแรกของแต่ละ workspace เท่านั้น (คนละ endpoint จาก getBoard เพราะต้อง
-// อ่านทั้งตาราง ไม่ได้อ่านแค่หน้าต่างบอร์ดเดียว) แล้ว cache ไว้ใน state.historyData จนกว่าจะสลับ workspace
+// ---------- UX3 Task 5: popup "งานเสร็จ" (แทนที่เนื้อหาเดิมของ openHistoryModal ทั้งหมด) ----------
+// โหลดแบบ lazy ตอนกดเปิด modal ครั้งแรกของแต่ละ workspace (คนละ endpoint จาก getBoard เพราะต้องอ่านทั้ง
+// ตาราง ไม่ใช่แค่หน้าต่างบอร์ดเดียว) แล้ว cache ไว้ใน state.historyData — เปิด modal ซ้ำหลังผ่านไปเกิน
+// 5 นาที (state.historyLoadedAt) ให้โหลดใหม่อีกรอบ กันเลขรายสัปดาห์ค้างเก่าทั้ง session ยาวๆ
+var HISTORY_STALE_MS = 5 * 60 * 1000;
 function openHistoryModal() {
   closeHistoryModal();
 
@@ -1529,16 +1836,16 @@ function openHistoryModal() {
   backdrop.addEventListener('click', closeHistoryModal);
 
   var panel = document.createElement('div');
-  panel.className = 'modal-panel';
+  panel.className = 'modal-panel chart-modal';
   panel.id = 'history-modal';
   var h3 = document.createElement('h3');
-  h3.textContent = 'ประวัติงานเสร็จแล้ว';
+  h3.textContent = 'งานเสร็จ · ' + state.workspace;
   panel.appendChild(h3);
 
   if (state.historyLoading || !state.historyData) {
     var loadingHint = document.createElement('p');
     loadingHint.className = 'empty-hint';
-    loadingHint.textContent = 'กำลังโหลด...';
+    loadingHint.textContent = 'กำลังโหลด…';
     panel.appendChild(loadingHint);
   } else if (state.historyData.total === 0) {
     var emptyHint = document.createElement('p');
@@ -1546,7 +1853,22 @@ function openHistoryModal() {
     emptyHint.textContent = 'ยังไม่มีงานที่เสร็จเลย';
     panel.appendChild(emptyHint);
   } else {
-    panel.appendChild(buildStatsContent(state.historyData.stats));
+    var data = state.historyData;
+
+    var hero = document.createElement('p');
+    hero.className = 'stats-hero';
+    hero.textContent = 'ทำเสร็จทั้งหมด ' + data.total + ' งาน';
+    panel.appendChild(hero);
+
+    var currentWeekStart = mondayOf(todayIso());
+    var bars = (data.weekly || []).map(function (w) {
+      var d = parseIso(w.weekStart);
+      return { label: d.getDate() + '/' + (d.getMonth() + 1), value: w.count, highlight: w.weekStart === currentWeekStart };
+    });
+    panel.appendChild(barBlockEl('เสร็จต่อสัปดาห์ (8 สัปดาห์)', bars));
+
+    var segments = foldOthers(segmentsFromStats(data.stats, (state.board && state.board.projects) || []), 8);
+    panel.appendChild(donutWithLegendEl('แยกตาม project (ทั้งหมด)', segments, data.total, 'งานเสร็จ'));
   }
 
   var closeBtn = document.createElement('button');
@@ -1557,8 +1879,10 @@ function openHistoryModal() {
 
   document.body.appendChild(backdrop);
   document.body.appendChild(panel);
+  attachChartTooltip(panel);
 
-  if (!state.historyData && !state.historyLoading) loadHistory();
+  var stale = !state.historyData || !state.historyLoadedAt || (Date.now() - state.historyLoadedAt > HISTORY_STALE_MS);
+  if (!state.historyLoading && stale) loadHistory();
 }
 
 function closeHistoryModal() {
@@ -1576,6 +1900,7 @@ function loadHistory() {
     .then(function (res) {
       if (!res.ok) throw new Error(res.error || 'โหลดประวัติไม่สำเร็จ');
       state.historyData = res.data;
+      state.historyLoadedAt = Date.now();
     })
     .catch(function (err) {
       showToast('ผิดพลาด: ' + err.message);
@@ -1981,6 +2306,7 @@ document.getElementById('workspace-tabs').addEventListener('click', function (e)
   state.workspace = btn.dataset.workspace;
   state.projectFilter = null; // project คนละชุดกันต่อ workspace เลยรีเซ็ต filter ทุกครั้งที่สลับ
   state.historyData = null; // ประวัติเป็นของแต่ละ workspace แยกกัน ต้องโหลดใหม่ตอนสลับ
+  state.historyLoadedAt = null;
   state.somedayOpen = false; // ปิดแผง Someday ไว้ก่อนตอนสลับ workspace กันสับสนว่าเห็นของ workspace ไหน
   localStorage.setItem(STORAGE_PREFIX + 'workspace', state.workspace); // L2P4: ts2_ prefix
   renderCaptureDayOptions(); // Office เลือกได้แค่ จ-ศ ต้องคำนวณตัวเลือกใหม่ทุกครั้งที่สลับ workspace
@@ -2026,6 +2352,15 @@ document.getElementById('capture-form').addEventListener('submit', function (e) 
   queueOp(newOpKey('add'), 'addTask', { workspace: state.workspace, title: title, day: day, tempId: tempId, project: project });
 });
 
+// UX3 Task 2: ปุ่มสถิติสองปุ่มใน .quick-row (แทน #menu-workload/#menu-history เดิมในเมนู ≡ ที่ถูกเอาออก
+// แล้ว) เปิด popup กราฟตรงๆ ไม่ต้องผ่านเมนูอีกต่อไป
+document.getElementById('stats-open-btn').addEventListener('click', function () {
+  openWorkloadModal();
+});
+document.getElementById('stats-done-btn').addEventListener('click', function () {
+  openHistoryModal();
+});
+
 // UX2: ปุ่ม Someday บน topbar — เปิด/ปิดคอลัมน์ที่ 3 (desktop) หรือ bottom sheet (มือถือ)
 document.getElementById('someday-btn').addEventListener('click', function () {
   state.somedayOpen = !state.somedayOpen;
@@ -2050,14 +2385,6 @@ document.addEventListener('click', function (e) {
   var dd = document.getElementById('menu-dropdown');
   if (!dd || dd.hidden) return;
   if (!e.target.closest('#menu-dropdown') && !e.target.closest('#menu-btn')) dd.hidden = true;
-});
-document.getElementById('menu-workload').addEventListener('click', function () {
-  document.getElementById('menu-dropdown').hidden = true;
-  openWorkloadModal();
-});
-document.getElementById('menu-history').addEventListener('click', function () {
-  document.getElementById('menu-dropdown').hidden = true;
-  openHistoryModal();
 });
 document.getElementById('menu-logout').addEventListener('click', function () {
   document.getElementById('menu-dropdown').hidden = true;

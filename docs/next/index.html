@@ -28,8 +28,6 @@
       <div class="menu-wrap">
         <button class="menu-btn" id="menu-btn" type="button" aria-label="เมนู">≡</button>
         <div class="menu-dropdown" id="menu-dropdown" hidden>
-          <button type="button" id="menu-workload">ภาพรวมงานค้าง</button>
-          <button type="button" id="menu-history">ประวัติงานเสร็จ</button>
           <button type="button" id="menu-logout">ออกจากระบบ</button>
         </div>
       </div>
@@ -45,6 +43,12 @@
       <select id="capture-day" class="capture-day-select" aria-label="เลือกวัน"></select>
       <select id="capture-project" class="capture-project-select" aria-label="เลือก project"></select>
     </form>
+  </div>
+
+  <!-- UX3 Task 2: สองปุ่มสถิติ เห็นตลอด อยู่ใต้ topbar เลย ไม่ sticky (แทนที่เดิมอยู่ในเมนู ≡ ซ่อนอยู่) -->
+  <div class="quick-row" id="quick-row">
+    <button class="stats-btn" id="stats-open-btn" type="button">📊 งานค้าง 0</button>
+    <button class="stats-btn" id="stats-done-btn" type="button">✅ งานเสร็จ</button>
   </div>
 
   <!-- UX2: project filter chips อยู่ใต้ topbar เลย ไม่ sticky (ต่างจาก topbar ด้านบน) -->

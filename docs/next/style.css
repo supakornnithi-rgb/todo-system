@@ -247,6 +247,148 @@ body {
   color: #8a6414;
 }
 
+/* ---------- UX3 Task 3/4/5: popup งานค้าง/งานเสร็จ — กราฟ (donut/bar มือเปล่า SVG) + legend + tooltip
+   .modal-panel เดิม (position:fixed) ทำหน้าที่ containing block ให้ .chart-tooltip (position:absolute)
+   อยู่แล้ว ไม่ต้องเพิ่ม position ใหม่ — ข้อกำหนด: tooltip ต้องอยู่ใน modal เสมอ ห้าม position:fixed
+   ลอยนอก modal ---------- */
+@media (min-width: 640px) {
+  .modal-panel.chart-modal {
+    inset: 6% auto auto 50%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 560px;
+    max-width: 90vw;
+  }
+}
+
+.stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+@media (min-width: 480px) {
+  .stat-tiles { grid-template-columns: repeat(4, 1fr); }
+}
+
+.stat-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.stat-tile-label {
+  font-size: 12px;
+  color: var(--text-soft);
+  margin-bottom: 4px;
+}
+
+.stat-tile-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stats-hero {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chart-block {
+  margin-bottom: 20px;
+}
+
+.chart-block:last-of-type {
+  margin-bottom: 0;
+}
+
+.chart-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chart-donut-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+@media (min-width: 480px) {
+  .chart-donut-row {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+.chart-donut-svg-wrap {
+  width: 180px;
+  flex-shrink: 0;
+}
+
+.chart-donut-svg-wrap svg,
+.chart-bar-svg-wrap svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-legend {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chart-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.chart-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.chart-legend-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-legend-value {
+  flex-shrink: 0;
+  color: var(--text-soft);
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 90;
+  background: var(--text);
+  color: #fff;
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  pointer-events: none;
+  white-space: nowrap;
+  transform: translateY(-100%);
+}
+
 .dreams-list {
   display: flex;
   flex-direction: column;
@@ -398,6 +540,20 @@ body {
   cursor: pointer;
 }
 
+/* UX3 Task 1: จอ <560px ช่องพิมพ์/เลือกวัน/เลือก project สูงอย่างน้อย 44px + ฟอนต์ 16px (กัน iOS
+   auto-zoom ตอน focus ด้วย) ปุ่ม + สูงเท่าช่องพิมพ์ — desktop (≥560px) ไม่แตะ ปล่อยตามเดิม */
+@media (max-width: 559.98px) {
+  #capture-input,
+  #capture-day,
+  #capture-project {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .capture-submit-btn {
+    min-height: 44px;
+  }
+}
+
 @media (min-width: 560px) {
   .capture-form .row-break {
     display: none;
@@ -445,6 +601,46 @@ body {
   height: 36px;
   border-radius: 10px;
   font-size: 17px;
+}
+
+/* ---------- UX3 Task 2: quick-row สองปุ่มสถิติ (งานค้าง/งานเสร็จ) เห็นตลอด อยู่ใต้ topbar ไม่ sticky ---------- */
+.quick-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px 0;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  .quick-row { padding: 8px 24px 0; }
+}
+
+.stats-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (min-width: 480px) {
+  .stats-btn {
+    flex: 0 0 auto;
+    padding: 0 18px;
+  }
+}
+
+.stats-btn:active {
+  background: var(--accent-soft);
 }
 
 /* ---------- project filter chips: แถวเดียวเลื่อนแนวนอน อยู่ใต้ topbar เลย ไม่ sticky ---------- */
