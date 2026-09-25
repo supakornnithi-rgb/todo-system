@@ -45,9 +45,29 @@ var NO_PROJECT_COLOR = '#a8a196';
 // เกินไปทั้งแบบ deutan และสายตาปกติ) ต่างจาก PROJECT_COLORS เดิม (hash ชื่อ -> พาสเทล ยังใช้กับ filter
 // chip เหมือนเดิม แยกจากชุดนี้โดยสิ้นเชิง) ตำแหน่งสีมาจาก "index ของชื่อใน master list" ไม่ใช่อันดับ
 // (rank) ในกราฟ ให้จุดสีบนการ์ดงานกับ segment ในกราฟตรงกันเสมอไม่ว่าจะเรียงลำดับยังไงในแต่ละที่ที่ใช้
-var CHART_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+// 8 สีแรกผ่านการตรวจแยกสีสำหรับกราฟ (ตาบอดสี/ตาปกติ) — project ลำดับที่ 9-16 ใช้ 8 สีเสริมต่อท้าย ให้แต่ละ
+// project ใน workspace เดียวกันได้สีไม่ซ้ำกันเลยสูงสุด 16 project (กราฟโดนัทยังพับเกิน 8 ชิ้นเป็น 'อื่นๆ')
+var CHART_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948',
+  '#00838f', '#9c6b30', '#ad1457', '#5c6bc0', '#827717', '#6d4c41', '#00695c', '#546e7a'];
 
 // projectChartColor: ไม่มี project หรือชื่อที่หาไม่เจอใน master list เลย (projectList) ได้สีเทากลางเสมอ
+// รายชื่อ project ที่ใช้กำหนดสี = master list ของ workspace (ลำดับตามเวลาสร้าง ไม่เปลี่ยน) + ชื่อ project ที่มีอยู่
+// ในงาน/สถิติแต่ไม่อยู่ใน master list (ข้อมูลเก่า) เรียงตามตัวอักษรต่อท้าย — เดิมชื่อพวกนี้เป็นสีเทาหมดจนดูซ้ำกัน
+function projectColorList(extraNames) {
+  var board = state.board;
+  var list = ((board && board.projects) || []).slice();
+  var extras = {};
+  function consider(name) {
+    if (name && name !== NO_PROJECT_LABEL && list.indexOf(name) === -1) extras[name] = true;
+  }
+  if (board) {
+    (board.days || []).forEach(function (d) { d.tasks.forEach(function (t) { consider(t.project); }); });
+    (board.someday || []).forEach(function (t) { consider(t.project); });
+  }
+  (extraNames || []).forEach(consider);
+  return list.concat(Object.keys(extras).sort());
+}
+
 function projectChartColor(name, projectList) {
   if (!name || name === NO_PROJECT_LABEL) return NO_PROJECT_COLOR;
   var idx = (projectList || []).indexOf(name);
@@ -1175,7 +1195,7 @@ function taskCardEl(task, opts) {
     // (hash พาสเทล) เดิม — colorForProject ยังใช้กับ filter chip/project picker เหมือนเดิม แยกจากกัน
     var dot = document.createElement('span');
     dot.className = 'project-dot';
-    dot.style.background = projectChartColor(task.project, (state.board && state.board.projects) || []);
+    dot.style.background = projectChartColor(task.project, projectColorList());
     chip.appendChild(dot);
     chip.appendChild(document.createTextNode(task.project));
   } else {
@@ -1603,11 +1623,14 @@ function renderProjectFilter() {
     var btn = document.createElement('button');
     var isActive = state.projectFilter === name;
     btn.className = 'filter-chip' + (isActive ? ' active' : '');
-    btn.textContent = name;
-    var chipColor = colorForProject(name);
-    btn.style.background = chipColor.bg;
-    btn.style.color = chipColor.fg;
-    if (isActive) btn.style.boxShadow = 'inset 0 0 0 2px ' + chipColor.fg;
+    // สีเดียวกับจุดหน้างานและกราฟ (projectChartColor) — ปุ่มพื้นเรียบ + จุดสีนำหน้า, ตัวที่เลือกอยู่มีกรอบสีนั้น
+    var chipColor = projectChartColor(name, projectColorList());
+    var chipDot = document.createElement('span');
+    chipDot.className = 'chip-dot';
+    chipDot.style.background = chipColor;
+    btn.appendChild(chipDot);
+    btn.appendChild(document.createTextNode(name));
+    if (isActive) btn.style.boxShadow = 'inset 0 0 0 2px ' + chipColor;
     btn.addEventListener('click', function () {
       state.projectFilter = name;
       renderProjectFilter();
@@ -1790,7 +1813,7 @@ function openWorkloadModal() {
     tiles.appendChild(statTileEl('Someday', somedayOpen));
     panel.appendChild(tiles);
 
-    var segments = foldOthers(segmentsFromStats(stats, board.projects), 8);
+    var segments = foldOthers(segmentsFromStats(stats, projectColorList()), 8);
     panel.appendChild(donutWithLegendEl('แยกตาม project', segments, totalOpen, 'งานค้าง'));
 
     var tomorrow = addDaysIso(board.today, 1);
@@ -1867,7 +1890,7 @@ function openHistoryModal() {
     });
     panel.appendChild(barBlockEl('เสร็จต่อสัปดาห์ (8 สัปดาห์)', bars));
 
-    var segments = foldOthers(segmentsFromStats(data.stats, (state.board && state.board.projects) || []), 8);
+    var segments = foldOthers(segmentsFromStats(data.stats, projectColorList((data.stats || []).map(function (x) { return x.name; }))), 8);
     panel.appendChild(donutWithLegendEl('แยกตาม project (ทั้งหมด)', segments, data.total, 'งานเสร็จ'));
   }
 
@@ -1963,11 +1986,11 @@ function openProjectPicker(task) {
 
   (state.board.projects || []).forEach(function (name) {
     var btn = document.createElement('button');
-    btn.textContent = name;
-    var chipColor = colorForProject(name);
-    btn.style.background = chipColor.bg;
-    btn.style.color = chipColor.fg;
-    btn.style.borderColor = 'transparent';
+    var pickDot = document.createElement('span');
+    pickDot.className = 'chip-dot';
+    pickDot.style.background = projectChartColor(name, projectColorList());
+    btn.appendChild(pickDot);
+    btn.appendChild(document.createTextNode(name));
     btn.addEventListener('click', function () {
       closeProjectPicker();
       updateTaskField(task, { project: name });

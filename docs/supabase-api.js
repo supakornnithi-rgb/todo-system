@@ -27,6 +27,41 @@
   // ต้องตรงกับ byOrder ฝั่ง docs/app.js (app.js:409) เป๊ะ — ใช้ createdAt เป็น tie-breaker ตอน order เท่ากัน
   function byOrder(a, b) { return (a.order || 0) - (b.order || 0) || byCreatedAt(a, b); }
 
+  // UX3 Task 5: จันทร์ของสัปดาห์ที่ iso อยู่ใน (ปฏิทินท้องถิ่นล้วนๆ เหมือน mondayOf ใน docs/next/app.js
+  // แต่เป็น local copy ของ adapter เอง ตามธรรมเนียมไฟล์นี้ที่ไม่พึ่ง global function จาก app.js เลย)
+  function mondayOfLocal(iso) {
+    var d = parseIsoLocal(iso);
+    var day = d.getDay();
+    var diff = (day === 0) ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    return toIsoLocal(d);
+  }
+
+  // buildWeekly: นับ task ที่เสร็จ (rows: [{completed_at}]) ลงถัง 8 สัปดาห์ล่าสุด (รวมสัปดาห์นี้) จันทร์
+  // เป็นวันแรกของสัปดาห์เสมอ ตามปฏิทินท้องถิ่น — คืนลิสต์เรียง เก่า -> ใหม่ (สัปดาห์นี้อยู่ตัวสุดท้ายเสมอ)
+  // นับด้วยวันที่ท้องถิ่นของ completed_at (new Date(...).getFullYear/Month/Date คืนค่าตาม timezone ของ
+  // runtime ที่รันโค้ดนี้อยู่ ซึ่งตรงกับ "แปลงเป็นวันที่ท้องถิ่น" ตามที่แผนระบุ)
+  function buildWeekly(rows, todayIsoStr, weeks) {
+    weeks = weeks || 8;
+    var currentWeekStart = mondayOfLocal(todayIsoStr);
+    var buckets = [];
+    for (var i = weeks - 1; i >= 0; i--) {
+      buckets.push({ weekStart: addDaysIsoLocal(currentWeekStart, -7 * i), count: 0 });
+    }
+    var indexByWeekStart = {};
+    buckets.forEach(function (b, idx) { indexByWeekStart[b.weekStart] = idx; });
+
+    (rows || []).forEach(function (r) {
+      if (!r.completed_at) return;
+      var localDate = new Date(r.completed_at);
+      var localIso = toIsoLocal(localDate);
+      var ws = mondayOfLocal(localIso);
+      if (indexByWeekStart.hasOwnProperty(ws)) buckets[indexByWeekStart[ws]].count++;
+    });
+
+    return buckets;
+  }
+
   // ---------- pure mapping helpers (export ที่ window.SbMap ให้ node test เรียกตรงได้) ----------
   function rowToSubtask(row) {
     return {
@@ -64,11 +99,13 @@
     };
   }
 
-  // 7 วัน Mon..Sun ของสัปดาห์ที่ขอ + someday + master project list — ต้อง deterministic เพราะ app.js
-  // เทียบ boardSignature ด้วย JSON.stringify (ดู app.js:1555-1557)
-  function buildBoard(workspace, weekStart, today, taskRows, projectRows) {
+  // UX2: numDays default 7 (เดิม) แต่ actionGetBoard ตอนนี้ขอ 14 วันเสมอ (จ.สัปดาห์นี้ .. อา.สัปดาห์หน้า)
+  // ให้ planner pane เห็น "พรุ่งนี้..+6" ได้ครบทุกกรณี (ดู rollingDays ใน app.js) — ต้อง deterministic เพราะ
+  // app.js เทียบ boardSignature ด้วย JSON.stringify (ดู app.js:1555-1557 เดิม)
+  function buildBoard(workspace, weekStart, today, taskRows, projectRows, numDays) {
+    numDays = numDays || 7;
     var days = [];
-    for (var i = 0; i < 7; i++) days.push(addDaysIsoLocal(weekStart, i));
+    for (var i = 0; i < numDays; i++) days.push(addDaysIsoLocal(weekStart, i));
 
     var byDay = {};
     days.forEach(function (d) { byDay[d] = []; });
@@ -124,6 +161,7 @@
     rowToDream: rowToDream,
     buildBoard: buildBoard,
     buildHistory: buildHistory,
+    buildWeekly: buildWeekly,
     iso: iso
   };
 
@@ -175,12 +213,16 @@
   }
 
   // ---------- reads ----------
+  // UX2 Task 1: ขอ 14 วัน (จ.สัปดาห์นี้ .. อา.สัปดาห์หน้า) แทน 7 วันเดิม — planner pane ต้องเห็นวันได้ถึง
+  // today+6 เสมอ ซึ่งกรณี today เป็นอาทิตย์ (index 6 นับจาก Monday ของสัปดาห์นี้) จะไปถึง index 12 พอดี
+  // อยู่ในหน้าต่าง 14 วัน [0..13] เสมอ ไม่ต้องขยับ weekStart เลย
+  var BOARD_WINDOW_DAYS = 14;
   function actionGetBoard(params) {
     var workspace = params.workspace;
     var weekStart = params.weekStart;
     var days = [];
-    for (var i = 0; i < 7; i++) days.push(addDaysIsoLocal(weekStart, i));
-    var mon = days[0], sun = days[6];
+    for (var i = 0; i < BOARD_WINDOW_DAYS; i++) days.push(addDaysIsoLocal(weekStart, i));
+    var mon = days[0], sun = days[BOARD_WINDOW_DAYS - 1];
 
     var tasksQuery = sb.from('tasks')
       .select('*, subtasks(*)')
@@ -197,18 +239,22 @@
         var taskRes = results[0], projRes = results[1];
         if (!taskRes.ok) return taskRes;
         if (!projRes.ok) return projRes;
-        var board = buildBoard(workspace, weekStart, todayIsoLocal(), taskRes.data, projRes.data);
+        var board = buildBoard(workspace, weekStart, todayIsoLocal(), taskRes.data, projRes.data, BOARD_WINDOW_DAYS);
         return { ok: true, data: board };
       });
   }
 
+  // UX3 Task 5: เพิ่ม completed_at เข้า select (เดิมเอาแค่ project) เพื่อคำนวณ weekly ด้วย — total/stats
+  // ยังมาจาก buildHistory เดิมเป๊ะ ไม่เปลี่ยน แค่เพิ่ม field weekly ต่อท้ายผลลัพธ์เดียวกัน
   function actionGetProjectHistory(params) {
     var workspace = params.workspace;
     return paginateAll(function (from, to) {
-      return sb.from('tasks').select('project').eq('workspace', workspace).eq('done', true).range(from, to);
+      return sb.from('tasks').select('project,completed_at').eq('workspace', workspace).eq('done', true).range(from, to);
     }).then(function (res) {
       if (!res.ok) return res;
-      return { ok: true, data: buildHistory(res.data) };
+      var history = buildHistory(res.data);
+      history.weekly = buildWeekly(res.data, todayIsoLocal(), 8);
+      return { ok: true, data: history };
     });
   }
 
@@ -234,7 +280,7 @@
     var day = payload.day === 'someday' ? null : payload.day;
     return runQuery(
       sb.from('tasks').upsert(
-        { id: payload.tempId, workspace: payload.workspace, title: payload.title, project: '', day: day },
+        { id: payload.tempId, workspace: payload.workspace, title: payload.title, project: payload.project || '', day: day }, // UX1: project มาจาก capture form (dropdown หรือ #hashtag)
         { onConflict: 'id', ignoreDuplicates: true }
       )
     ).then(function (res) {
