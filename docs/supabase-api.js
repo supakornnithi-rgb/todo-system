@@ -474,6 +474,11 @@
   function sbSignOut() {
     return sb.auth.signOut();
   }
+  // UX4: เปลี่ยนรหัสผ่านของผู้ใช้ที่ล็อกอินอยู่ (ต้องมี session) — คืน promise ของ supabase ตรงๆ ({data, error})
+  // ห้าม log ค่า newPassword ที่ไหนทั้งสิ้น
+  function sbUpdatePassword(newPassword) {
+    return sb.auth.updateUser({ password: newPassword });
+  }
   function sbOnAuthChange(cb) {
     return sb.auth.onAuthStateChange(function (event, session) { cb(event, session); });
   }
@@ -484,5 +489,16 @@
   window.sbGetSession = sbGetSession;
   window.sbSignIn = sbSignIn;
   window.sbSignOut = sbSignOut;
+  window.sbUpdatePassword = sbUpdatePassword;
+
+  // ขนาดฐานข้อมูลเป็น % ของโควตาฟรี 500 MB (เรียก RPC db_size_bytes — ต้อง grant execute ให้ authenticated
+  // ด้วย supabase/L2P6_db_usage_grant.sql) ล้มเหลวด้วยเหตุใดก็ตามคืน null ไม่รบกวนการใช้งาน
+  window.sbDbUsagePct = function () {
+    return Promise.resolve(sb.rpc('db_size_bytes')).then(function (res) {
+      if (!res || res.error || res.data == null) return null;
+      var bytes = Number(res.data);
+      return isNaN(bytes) ? null : Math.round(bytes / (500 * 1024 * 1024) * 1000) / 10;
+    }).catch(function () { return null; });
+  };
   window.sbOnAuthChange = sbOnAuthChange;
 })();

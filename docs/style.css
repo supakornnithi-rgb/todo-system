@@ -1414,3 +1414,338 @@ main {
 }
 .filter-chip:not(.active) { color: var(--text); }
 .filter-chip.active .chip-dot { box-shadow: 0 0 0 1.5px #fff; }
+
+/* ---------- UX4 Task 3: ปุ่มโหมดเลือกหลายงานใน .quick-row (3 ปุ่มต้องพอดีที่ 375px ไม่ล้น) ---------- */
+@media (max-width: 479.98px) {
+  .quick-row { gap: 6px; }
+  .stats-btn { font-size: 12.5px; padding: 0 4px; }
+  #select-mode-btn { flex-grow: 1.35; }
+}
+
+.stats-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---------- UX4 Task 3: โหมดเลือกหลายงาน ---------- */
+body.select-mode main {
+  padding-bottom: 110px; /* กัน select bar (fixed) บังการ์ดใบสุดท้าย */
+}
+
+body.select-mode .pane-someday {
+  padding-bottom: 110px; /* bottom sheet Someday ก็โดน select bar (z-index สูงกว่า) บังเหมือนกัน */
+}
+
+.task-card.selectable {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.task-card.selectable .task-actions,
+.task-card.selectable .task-check {
+  display: none !important; /* โหมดเลือก: ไม่มีปุ่ม action/ติ๊กเสร็จบนการ์ด (ใช้แถบด้านล่างแทน) */
+}
+
+.task-card.selectable .task-title,
+.task-card.selectable .project-chip,
+.task-card.selectable .subtask-toggle {
+  cursor: pointer;
+}
+
+.task-card.selected,
+.task-card.selected:hover {
+  background: var(--accent-soft);
+}
+
+.select-box {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.task-card.selected .select-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.select-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90; /* สูงกว่า fixed element อื่นของหน้า (toast/queue-status 60, modal 70, Someday sheet 81) */
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.14);
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+@media (min-width: 640px) {
+  .select-bar {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: min(520px, calc(100% - 24px));
+    bottom: 12px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding-bottom: 10px;
+  }
+}
+
+.select-count {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.select-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.select-actions button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 0 6px;
+}
+
+.select-actions button.select-cancel {
+  background: transparent;
+  color: var(--text-soft);
+  border-color: var(--border);
+  flex: 0 0 auto;
+  padding: 0 14px;
+}
+
+.select-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------- UX4 Task 2: ตัวเลือกวัน 📅 (popover บน desktop / bottom sheet บนมือถือ) ---------- */
+.daypicker-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 109; /* สูงกว่า select bar (90) เพราะเปิดจากปุ่มบนแถบนั้นได้ */
+}
+
+.daypicker {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border-radius: 16px 16px 0 0;
+  padding: 14px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.22);
+  z-index: 110;
+}
+
+.daypicker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.daypicker-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.daypicker-close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 16px;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.daypicker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.daypicker-pill {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 999px;
+  font-size: 13px;
+  padding: 0 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.daypicker-pill:active:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.daypicker-pill.someday {
+  grid-column: 1 / -1;
+}
+
+.daypicker-pill.current,
+.daypicker-pill:disabled {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+  cursor: default;
+  opacity: 0.85;
+}
+
+@media (min-width: 1024px) {
+  .daypicker-backdrop {
+    background: transparent; /* desktop: แค่รับคลิกนอก popover เพื่อปิด ไม่ต้องหรี่จอ */
+  }
+  .daypicker.popover {
+    right: auto;
+    bottom: auto;
+    width: 330px;
+    max-height: 70vh;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 12px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.2);
+  }
+  .daypicker.popover .daypicker-pill,
+  .daypicker.popover .daypicker-close {
+    min-height: 40px;
+  }
+}
+
+/* ---------- UX4 Task 4: modal เปลี่ยนรหัสผ่าน ---------- */
+@media (min-width: 640px) {
+  .modal-panel.password-modal {
+    inset: 12% auto auto 50%;
+    transform: translateX(-50%);
+    width: 380px;
+    max-width: 90vw;
+  }
+}
+
+.password-modal .form-field {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.password-modal .form-field span {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  margin-bottom: 4px;
+}
+
+.password-modal .form-field input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 16px; /* 16px กัน iOS ซูมเข้าตอนโฟกัสช่องกรอก */
+  background: var(--bg);
+  color: var(--text);
+}
+
+.password-modal .form-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.password-modal .form-error {
+  min-height: 18px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #b3402f;
+}
+
+.password-modal .form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.password-modal .form-actions button {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.password-modal .primary-btn {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.password-modal .primary-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.password-modal .close-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-soft);
+}
+
+/* แถบเตือนพื้นที่ฐานข้อมูลเกิน 80% (โชว์เฉพาะตอนเกินเกณฑ์) */
+.db-warning {
+  max-width: 1400px;
+  margin: 10px auto 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #fbeaea;
+  border: 1px solid #f0c4c4;
+  color: #8f2d2d;
+  font-size: 13px;
+  font-weight: 600;
+}
+@media (max-width: 1023.98px) {
+  .db-warning { margin: 10px 16px 0; }
+}

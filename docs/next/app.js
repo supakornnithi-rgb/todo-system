@@ -218,6 +218,23 @@ function captureDayOptions(todayIsoStr, weekdaysOnly) {
   return options;
 }
 
+// UX4 (pure, testable): ตัวเลือกวันของตัวเลือกวัน 📅 (day picker) — วันนี้ + อีก 13 วันถัดไป (หน้าต่างปฏิทิน
+// 14 วัน Office ข้ามเสาร์-อาทิตย์เหมือน captureDayOptions) บวก 'someday' ปิดท้ายเสมอ
+// current = true ตรงตัวเลือกที่ value === currentDay (งานอยู่วันนั้นอยู่แล้ว ปุ่มจะกดไม่ได้) — ส่ง null ได้
+// (โหมดเลือกหลายงาน ไม่มีวันปัจจุบันร่วมกัน)
+function dayPickerOptions(todayIsoStr, weekdaysOnly, currentDay) {
+  var tomorrow = addDaysIso(todayIsoStr, 1);
+  var options = [];
+  for (var i = 0; i < 14; i++) {
+    var d = addDaysIso(todayIsoStr, i);
+    if (weekdaysOnly && isWeekend(d)) continue;
+    var label = (d === todayIsoStr) ? 'วันนี้' : ((d === tomorrow) ? 'พรุ่งนี้' : formatDayHeading(d));
+    options.push({ value: d, label: label, current: d === currentDay });
+  }
+  options.push({ value: 'someday', label: 'Someday', current: currentDay === 'someday' });
+  return options;
+}
+
 // overdueTasks: งานที่ยังไม่เสร็จของวันที่ผ่านมาแล้ว (day < board.today) ภายในหน้าต่างบอร์ดที่โหลดมา
 function overdueTasks(board) {
   var out = [];
@@ -586,6 +603,17 @@ function sendQueuedEntry(key, entry) {
   return apiPost(entry.data.action, Object.assign({ opId: entry.opId }, entry.data.params));
 }
 
+// UX4 (pure, testable): ควรเอาผลลัพธ์จาก server มาทับ state.board หรือไม่
+// task:/reorder: ที่ยังมี entry ค้างอยู่ใน queueStore หลังส่งสำเร็จ = มี intent ใหม่กว่าของ key เดียวกัน
+// รออยู่ (เช่น กด → รัวๆ) ผลที่ server เพิ่งตอบเป็นของ "intent เก่า" ถ้าเอามาทับ จอจะเด้งถอยกลับวันเก่า
+// แล้วค่อยเด้งไปข้างหน้าอีกทีตอน intent ใหม่ส่งเสร็จ (อาการ bounce) — ข้ามไปเลย รอผลของ intent ล่าสุดแทน
+// (flush() จะเรียก flush(key) ต่อทันทีเมื่อ queueStore[key] ยังอยู่ และผลสุดท้ายจะถูก apply ตอนนั้น)
+// op: คือ action ครั้งเดียวไม่ merge (addTask ฯลฯ) ต้อง apply เสมอ (เช่นสลับ temp id เป็นของจริง)
+function shouldApplyQueueResult(key, store) {
+  if (key.indexOf('task:') === 0 || key.indexOf('reorder:') === 0) return !(store && store[key]);
+  return true;
+}
+
 // เอาผลลัพธ์ที่ backend ยืนยันมาสะท้อนกลับ state.board ให้ตรงของจริง (แทนที่ค่า optimistic ชั่วคราว
 // เช่น temp id ของงานที่เพิ่งเพิ่ม ด้วยของจริงจาก server)
 function applyQueueResult(key, entry, res) {
@@ -594,6 +622,7 @@ function applyQueueResult(key, entry, res) {
     loadBoard(); // backend ปฏิเสธจริง (ไม่ใช่แค่เน็ตพัง) โหลดใหม่ให้เห็นสถานะจริงเสมอ
     return;
   }
+  if (!shouldApplyQueueResult(key, queueStore)) return; // UX4: ผลเก่า มี intent ใหม่กว่ารออยู่ ไม่ทับจอ
   if (key.indexOf('task:') === 0) {
     applyTask(res.result);
   } else if (key.indexOf('reorder:') === 0) {
@@ -721,6 +750,8 @@ var state = {
   historyLoading: false,
   historyData: null, // {total, stats:[{name,count,pct}], weekly:[{weekStart,count}]} — โหลดตอนกดเปิด modal ประวัติครั้งแรกของแต่ละ workspace
   historyLoadedAt: null, // UX3: timestamp (ms) ของครั้งล่าสุดที่โหลดสำเร็จ — เปิด modal ซ้ำเกิน 5 นาทีให้โหลดใหม่ กันเลขรายสัปดาห์ค้าง
+  selectMode: false, // UX4: โหมดเลือกหลายงาน (ติ๊กการ์ดแล้วย้ายวัน/ทำเสร็จพร้อมกัน)
+  selectedIds: new Set(), // UX4: id ของงานที่ติ๊กเลือกไว้ในโหมดเลือกหลายงาน
   dreamsData: null, // ลิสต์ TRUE DREAM — แยกอิสระจาก workspace/task ทั้งหมด โหลดครั้งแรกตอนกดเปิดปุ่ม
   dreamsLoading: false
 };
@@ -805,6 +836,7 @@ function refreshUI() {
   updateSomedayBtn();
   updateStatsButtons();
   renderLayout();
+  updateSelectBar(); // UX4: แถบ action ด้านล่างของโหมดเลือกหลายงาน (ไม่มีอะไรทำถ้าไม่ได้อยู่ในโหมดนั้น)
   // ถ้า modal งานค้าง/งานเสร็จเปิดค้างอยู่ ให้วาดเนื้อหาใหม่ตามข้อมูลล่าสุดด้วย
   if (document.getElementById('workload-modal')) openWorkloadModal();
   if (document.getElementById('history-modal')) openHistoryModal();
@@ -1165,9 +1197,11 @@ function onReorderEnd() {
 
 function taskCardEl(task, opts) {
   var card = document.createElement('div');
-  card.className = 'task-card' + (task.done ? ' done' : '');
+  card.className = 'task-card' + (task.done ? ' done' : '') +
+    (state.selectMode ? ' selectable' + (state.selectedIds.has(task.id) ? ' selected' : '') : '');
   card.dataset.id = task.id; // UX1: ให้ onReorderEnd หาตำแหน่งจาก id แทน DOM index (ใช้ได้แม้ done ถูกซ่อนอยู่)
 
+  var selecting = state.selectMode; // UX4: ในโหมดเลือกหลายงาน การ์ดแตะ=ติ๊กเลือก ปิดแก้ชื่อ/ลาก/จัดลำดับ
   var check = document.createElement('button');
   check.className = 'task-check';
   check.textContent = task.done ? '✓' : '';
@@ -1215,7 +1249,7 @@ function taskCardEl(task, opts) {
   });
   body.appendChild(subtaskToggle);
 
-  if (isExpanded) {
+  if (isExpanded && !selecting) {
     body.appendChild(subtaskBoxEl(task));
   }
 
@@ -1236,6 +1270,7 @@ function taskCardEl(task, opts) {
       showToast('ย้ายขึ้นวันนี้แล้ว');
     });
     actions.appendChild(toToday);
+    actions.appendChild(dayPickerBtnEl(task)); // UX4: 📅 หลัง ↥
   } else {
     var prev = document.createElement('button');
     prev.textContent = '←';
@@ -1258,6 +1293,7 @@ function taskCardEl(task, opts) {
     });
     actions.appendChild(prev);
     actions.appendChild(next);
+    actions.appendChild(dayPickerBtnEl(task)); // UX4: 📅 หลัง →
     actions.appendChild(toSomeday);
   }
 
@@ -1273,7 +1309,20 @@ function taskCardEl(task, opts) {
   });
   actions.appendChild(del);
 
-  if (!(opts && opts.somedayItem)) {
+  if (selecting) {
+    // UX4: checkbox กลมแทนที่ handle ⠿ (ไม่ render handle เลยในโหมดนี้) — แตะที่ไหนในการ์ดก็ติ๊กได้
+    var selBox = document.createElement('span');
+    selBox.className = 'select-box';
+    selBox.setAttribute('aria-hidden', 'true');
+    selBox.textContent = state.selectedIds.has(task.id) ? '✓' : '';
+    card.appendChild(selBox);
+    // capture phase + stopPropagation: กลบ handler ของลูกทุกตัว (แก้ชื่อ, project, ปุ่มต่างๆ) ให้เหลือแค่ติ๊กเลือก
+    card.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSelected(task.id, card);
+    }, true);
+  } else if (!(opts && opts.somedayItem)) {
     var handle = document.createElement('button');
     handle.className = 'drag-handle';
     handle.textContent = '⠿';
@@ -1289,7 +1338,7 @@ function taskCardEl(task, opts) {
   // UX2: ลากทั้งการ์ดย้ายวันได้ในทุก pane/ทุกขนาดจอเสมอ (Today, Planner, Someday) — เดิม (UX1) จำกัดไว้
   // แค่มุมมอง Week เท่านั้น ตอนนี้ไม่มี view แยกแล้วเลยเปิดให้ทุกที่ รวมถึงการ์ดใน Someday ด้วย (ต้องลาก
   // ไปวางบนวันได้ ดู .pane-someday ที่ห่อด้วย .day-section data-date="someday")
-  attachDragHandlers(card, task);
+  if (!selecting) attachDragHandlers(card, task); // UX4: โหมดเลือกหลายงานปิดการลาก
 
   return card;
 }
@@ -2042,6 +2091,337 @@ function closeProjectPicker() {
   if (p) p.remove();
 }
 
+// ---------- UX4: ตัวเลือกวัน 📅 (day picker) ----------
+// desktop (>=1024px): popover เล็กใต้ปุ่ม (ถ้าที่ไม่พอเปิดขึ้นด้านบน) มี pill 3 คอลัมน์ ปิดเมื่อคลิกนอก/Escape
+// มือถือ: bottom sheet เหมือน Someday (backdrop, สูงไม่เกิน 70vh, ปุ่มปิด) — markup เดียวกัน CSS คุมหน้าตา
+function dayPickerBtnEl(task) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'daypick-btn';
+  btn.textContent = '📅';
+  btn.title = 'เลือกวัน';
+  btn.setAttribute('aria-label', 'เลือกวัน');
+  btn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    openDayPicker({
+      anchor: btn,
+      title: 'ย้าย "' + task.title + '" ไปวัน…',
+      weekdaysOnly: isWeekdaysOnly(task.workspace),
+      currentDay: task.day,
+      onPick: function (value) { updateTaskField(task, { day: value }); }
+    });
+  });
+  return btn;
+}
+
+function isDesktopLayout() {
+  return !!(window.matchMedia && window.matchMedia('(min-width: 1024px)').matches);
+}
+
+// opts: { anchor, title, weekdaysOnly, currentDay (หรือ null), onPick(value) }
+function openDayPicker(opts) {
+  closeDayPicker();
+  var options = dayPickerOptions(todayIso(), !!opts.weekdaysOnly, opts.currentDay);
+
+  var backdrop = document.createElement('div');
+  backdrop.className = 'daypicker-backdrop';
+  backdrop.id = 'daypicker-backdrop';
+  backdrop.addEventListener('click', closeDayPicker); // คลิกนอก popover (desktop) / แตะฉากหลัง (มือถือ)
+
+  var panel = document.createElement('div');
+  panel.className = 'daypicker';
+  panel.id = 'daypicker';
+  panel.setAttribute('role', 'dialog');
+
+  var header = document.createElement('div');
+  header.className = 'daypicker-header';
+  var h = document.createElement('p');
+  h.className = 'daypicker-title';
+  h.textContent = opts.title || 'เลือกวัน';
+  header.appendChild(h);
+  var closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'daypicker-close';
+  closeBtn.setAttribute('aria-label', 'ปิด');
+  closeBtn.textContent = '✕';
+  closeBtn.addEventListener('click', closeDayPicker);
+  header.appendChild(closeBtn);
+  panel.appendChild(header);
+
+  var grid = document.createElement('div');
+  grid.className = 'daypicker-grid';
+  options.forEach(function (o) {
+    var pill = document.createElement('button');
+    pill.type = 'button';
+    pill.className = 'daypicker-pill' + (o.current ? ' current' : '') + (o.value === 'someday' ? ' someday' : '');
+    pill.textContent = o.label;
+    pill.dataset.value = o.value;
+    if (o.current) {
+      pill.disabled = true;
+      pill.setAttribute('aria-current', 'true');
+    } else {
+      pill.addEventListener('click', function () {
+        closeDayPicker();
+        opts.onPick(o.value);
+      });
+    }
+    grid.appendChild(pill);
+  });
+  panel.appendChild(grid);
+
+  document.body.appendChild(backdrop);
+  document.body.appendChild(panel);
+
+  if (isDesktopLayout() && opts.anchor && opts.anchor.getBoundingClientRect) {
+    panel.classList.add('popover');
+    var r = opts.anchor.getBoundingClientRect();
+    var w = panel.offsetWidth, ph = panel.offsetHeight;
+    var left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+    var top = r.bottom + 6;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6); // ที่ด้านล่างไม่พอ เปิดขึ้นด้านบน
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+  }
+}
+
+function closeDayPicker() {
+  var b = document.getElementById('daypicker-backdrop');
+  var p = document.getElementById('daypicker');
+  if (b) b.remove();
+  if (p) p.remove();
+}
+
+// ---------- UX4: โหมดเลือกหลายงาน ----------
+function selectedTasks() {
+  var out = [];
+  state.selectedIds.forEach(function (id) {
+    var t = findTaskAnywhereLocal(id);
+    if (t) out.push(t); // งานที่หายไปแล้ว (ลบ/ย้าย workspace ผ่าน Realtime) ข้ามเงียบๆ
+  });
+  return out;
+}
+
+function resetSelectState() {
+  state.selectMode = false;
+  state.selectedIds = new Set();
+}
+
+function enterSelectMode() {
+  state.selectMode = true;
+  state.selectedIds = new Set();
+  refreshUI();
+}
+
+// exit: ออกจากโหมด + ล้างรายการที่เลือกเสมอ (ยกเลิก / Escape / กดปุ่มโหมดซ้ำ / สลับ workspace / ทำเสร็จแล้ว)
+function exitSelectMode() {
+  closeDayPicker();
+  if (!state.selectMode) return;
+  resetSelectState();
+  refreshUI();
+}
+
+// ติ๊ก/เอาติ๊กออกในที่ (ไม่ render ใหม่ทั้งบอร์ด ลดอาการจอกระตุก/scroll เด้ง)
+function toggleSelected(id, card) {
+  var on = !state.selectedIds.has(id);
+  if (on) state.selectedIds.add(id);
+  else state.selectedIds.delete(id);
+  if (card) {
+    card.classList.toggle('selected', on);
+    var box = card.querySelector('.select-box');
+    if (box) box.textContent = on ? '✓' : '';
+  }
+  updateSelectBar();
+}
+
+function selectBarEl() {
+  var bar = document.getElementById('select-bar');
+  if (bar) return bar;
+  bar = document.createElement('div');
+  bar.className = 'select-bar';
+  bar.id = 'select-bar';
+
+  var count = document.createElement('span');
+  count.className = 'select-count';
+  count.id = 'select-count';
+  bar.appendChild(count);
+
+  var btns = document.createElement('div');
+  btns.className = 'select-actions';
+
+  var moveBtn = document.createElement('button');
+  moveBtn.type = 'button';
+  moveBtn.id = 'select-move-btn';
+  moveBtn.textContent = '📅 ย้ายไปวัน…';
+  moveBtn.addEventListener('click', function () {
+    if (selectedTasks().length === 0) return;
+    openDayPicker({
+      anchor: moveBtn,
+      title: 'ย้ายงานที่เลือกไปวัน…',
+      weekdaysOnly: isWeekdaysOnly(state.workspace),
+      currentDay: null, // หลายงานอยู่คนละวันกัน ไม่มี "วันปัจจุบัน" ร่วม
+      onPick: function (value) { moveSelectedTo(value); }
+    });
+  });
+  btns.appendChild(moveBtn);
+
+  var doneBtn = document.createElement('button');
+  doneBtn.type = 'button';
+  doneBtn.id = 'select-done-btn';
+  doneBtn.textContent = '✓ ทำเสร็จ';
+  doneBtn.addEventListener('click', markSelectedDone);
+  btns.appendChild(doneBtn);
+
+  var cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.id = 'select-cancel-btn';
+  cancelBtn.className = 'select-cancel';
+  cancelBtn.textContent = 'ยกเลิก';
+  cancelBtn.addEventListener('click', exitSelectMode);
+  btns.appendChild(cancelBtn);
+
+  bar.appendChild(btns);
+  document.body.appendChild(bar);
+  return bar;
+}
+
+// เรียกทุก refreshUI และทุกครั้งที่ติ๊ก — สร้างแถบตอนอยู่ในโหมด ลบแถบตอนออกจากโหมด
+function updateSelectBar() {
+  document.body.classList.toggle('select-mode', state.selectMode);
+  var modeBtn = document.getElementById('select-mode-btn');
+  if (modeBtn) modeBtn.classList.toggle('active', state.selectMode);
+  if (!state.selectMode) {
+    var old = document.getElementById('select-bar');
+    if (old) old.remove();
+    return;
+  }
+  selectBarEl();
+  var n = selectedTasks().length;
+  document.getElementById('select-count').textContent = 'เลือกแล้ว ' + n + ' งาน';
+  ['select-move-btn', 'select-done-btn'].forEach(function (id) {
+    document.getElementById(id).disabled = (n === 0);
+  });
+}
+
+function moveSelectedTo(day) {
+  var tasks = selectedTasks();
+  if (tasks.length === 0) return;
+  resetSelectState();
+  tasks.forEach(function (t) {
+    if (t.day !== day) updateTaskField(t, { day: day }); // อยู่วันนั้นอยู่แล้วไม่ต้องส่ง (กันไปต่อท้ายลำดับโดยไม่จำเป็น)
+  });
+  refreshUI();
+  showToast('ย้าย ' + tasks.length + ' งานแล้ว');
+}
+
+function markSelectedDone() {
+  var all = selectedTasks();
+  if (all.length === 0) return;
+  var tasks = all.filter(function (t) { return !t.done; });
+  resetSelectState();
+  tasks.forEach(function (t) { updateTaskField(t, { done: true }); });
+  refreshUI();
+  showToast('ทำเสร็จ ' + tasks.length + ' งาน');
+}
+
+// ---------- UX4: เปลี่ยนรหัสผ่าน (เมนู ≡) ----------
+// validatePasswordChange (pure): คืนข้อความ error ภาษาไทย หรือ null ถ้าผ่าน — ตรวจก่อนเรียก API เสมอ
+function validatePasswordChange(pw, confirmPw) {
+  if (!pw) return 'กรอกรหัสผ่านใหม่';
+  if (pw.length < 8) return 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัว';
+  if (pw !== confirmPw) return 'รหัสผ่านทั้งสองช่องไม่ตรงกัน';
+  return null;
+}
+
+function openPasswordModal() {
+  closePasswordModal();
+
+  var backdrop = document.createElement('div');
+  backdrop.className = 'backdrop';
+  backdrop.id = 'password-modal-backdrop';
+  backdrop.addEventListener('click', closePasswordModal);
+
+  var panel = document.createElement('form');
+  panel.className = 'modal-panel password-modal';
+  panel.id = 'password-modal';
+  panel.noValidate = true;
+
+  var h3 = document.createElement('h3');
+  h3.textContent = 'เปลี่ยนรหัสผ่าน';
+  panel.appendChild(h3);
+
+  function fieldEl(id, labelText) {
+    var wrap = document.createElement('label');
+    wrap.className = 'form-field';
+    wrap.setAttribute('for', id);
+    var span = document.createElement('span');
+    span.textContent = labelText;
+    var input = document.createElement('input');
+    input.type = 'password';
+    input.id = id;
+    input.autocomplete = 'new-password';
+    wrap.appendChild(span);
+    wrap.appendChild(input);
+    panel.appendChild(wrap);
+    return input;
+  }
+  var pwInput = fieldEl('new-password', 'รหัสผ่านใหม่');
+  var confirmInput = fieldEl('confirm-password', 'ยืนยันรหัสผ่านใหม่');
+
+  var errEl = document.createElement('p');
+  errEl.className = 'form-error';
+  errEl.id = 'password-error';
+  errEl.setAttribute('role', 'alert');
+  panel.appendChild(errEl);
+
+  var actions = document.createElement('div');
+  actions.className = 'form-actions';
+  var cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'close-btn';
+  cancelBtn.textContent = 'ยกเลิก';
+  cancelBtn.addEventListener('click', closePasswordModal);
+  var submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.className = 'primary-btn';
+  submitBtn.textContent = 'บันทึก';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(submitBtn);
+  panel.appendChild(actions);
+
+  panel.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var problem = validatePasswordChange(pwInput.value, confirmInput.value);
+    if (problem) { errEl.textContent = problem; return; }
+    errEl.textContent = '';
+    submitBtn.disabled = true;
+    // ห้าม log/แสดงรหัสผ่านที่ไหนทั้งสิ้น — ส่งให้ Supabase ตรงๆ แล้วเคลียร์ช่องทันทีเมื่อสำเร็จ
+    function fail(message) {
+      submitBtn.disabled = false;
+      errEl.textContent = 'เปลี่ยนรหัสผ่านไม่สำเร็จ: ' + (message || 'ไม่ทราบสาเหตุ');
+    }
+    sbUpdatePassword(pwInput.value)
+      .then(function (res) {
+        if (res && res.error) { fail(res.error.message); return; }
+        pwInput.value = '';
+        confirmInput.value = '';
+        closePasswordModal();
+        showToast('เปลี่ยนรหัสผ่านแล้ว');
+      })
+      .catch(function (err) { fail(err && err.message); });
+  });
+
+  document.body.appendChild(backdrop);
+  document.body.appendChild(panel);
+  pwInput.focus();
+}
+
+function closePasswordModal() {
+  var b = document.getElementById('password-modal-backdrop');
+  var p = document.getElementById('password-modal');
+  if (b) b.remove();
+  if (p) p.remove();
+}
+
 // ---------- TRUE DREAM — ลิสต์ความฝันส่วนตัว แยกอิสระจาก workspace/task ทั้งหมด ----------
 // ไม่ขีดฆ่าตอนติ๊กเสร็จเหมือน task (นี่คือความฝัน ไม่ใช่ภาระ) แต่โชว์วันที่ทำสำเร็จแทน พร้อม toast ฉลอง
 var DREAM_MONTHS_TH = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -2326,6 +2706,9 @@ document.getElementById('dreams-btn').addEventListener('click', openDreamsPanel)
 document.getElementById('workspace-tabs').addEventListener('click', function (e) {
   var btn = e.target.closest('.tab-btn');
   if (!btn) return;
+  resetSelectState(); // UX4: สลับ workspace ออกจากโหมดเลือกหลายงานเสมอ (refreshUI หลังโหลดบอร์ดจะลบแถบเอง)
+  closeDayPicker();
+  updateSelectBar(); // ลบแถบเลือกหลายงานทันที ไม่รอบอร์ดใหม่โหลดเสร็จ
   state.workspace = btn.dataset.workspace;
   state.projectFilter = null; // project คนละชุดกันต่อ workspace เลยรีเซ็ต filter ทุกครั้งที่สลับ
   state.historyData = null; // ประวัติเป็นของแต่ละ workspace แยกกัน ต้องโหลดใหม่ตอนสลับ
@@ -2391,11 +2774,22 @@ document.getElementById('someday-btn').addEventListener('click', function () {
 });
 
 // UX2: ปิด Someday sheet/column ด้วย Escape (ตามที่แผนระบุสำหรับ bottom sheet บนมือถือ ใช้ได้ทั้ง desktop ด้วย)
+// UX4: Escape ปิดทีละชั้น — ตัวเลือกวัน -> modal เปลี่ยนรหัสผ่าน -> โหมดเลือกหลายงาน -> Someday
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape' && state.somedayOpen) {
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('daypicker')) { closeDayPicker(); return; }
+  if (document.getElementById('password-modal')) { closePasswordModal(); return; }
+  if (state.selectMode) { exitSelectMode(); return; }
+  if (state.somedayOpen) {
     state.somedayOpen = false;
     refreshUI();
   }
+});
+
+// UX4: ปุ่ม ☑ เลือกหลายงาน ใน .quick-row — กดซ้ำเพื่อออกจากโหมด
+document.getElementById('select-mode-btn').addEventListener('click', function () {
+  if (state.selectMode) exitSelectMode();
+  else enterSelectMode();
 });
 
 // UX2: เมนู ≡ — dropdown เล็กๆ ใต้ปุ่ม คลิกนอกดรอปดาวน์ปิดเอง
@@ -2408,6 +2802,10 @@ document.addEventListener('click', function (e) {
   var dd = document.getElementById('menu-dropdown');
   if (!dd || dd.hidden) return;
   if (!e.target.closest('#menu-dropdown') && !e.target.closest('#menu-btn')) dd.hidden = true;
+});
+document.getElementById('menu-password').addEventListener('click', function () {
+  document.getElementById('menu-dropdown').hidden = true;
+  openPasswordModal();
 });
 document.getElementById('menu-logout').addEventListener('click', function () {
   document.getElementById('menu-dropdown').hidden = true;
@@ -2438,6 +2836,23 @@ function debouncedPollBoard() {
   realtimeDebounceTimer = setTimeout(pollBoard, 400);
 }
 
+// เตือนเมื่อฐานข้อมูลใช้พื้นที่เกิน 80% ของโควตาฟรี (เจ้าของขอให้เตือนในแอพเท่านั้น ไม่ส่งอีเมล/LINE)
+// เช็คครั้งเดียวตอนเปิดแอพ — ไม่ถึงเกณฑ์หรือเช็คไม่ได้ ไม่แสดงอะไรเลย
+var DB_USAGE_WARN_PCT = 80;
+function checkDbUsage() {
+  if (typeof sbDbUsagePct !== 'function') return;
+  sbDbUsagePct().then(function (pct) {
+    var el = document.getElementById('db-warning');
+    if (!el) return;
+    if (pct !== null && pct >= DB_USAGE_WARN_PCT) {
+      el.textContent = '⚠️ พื้นที่ฐานข้อมูลใช้ไปแล้ว ' + pct + '% ของโควตาฟรี — ควรล้างงานเก่าออก (แจ้งผู้ดูแลระบบ)';
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+    }
+  });
+}
+
 function bootApp() {
   if (booted) return;
   booted = true;
@@ -2449,6 +2864,7 @@ function bootApp() {
     if (!realtimeUnsubscribe) realtimeUnsubscribe = sbSubscribeChanges(debouncedPollBoard);
   });
   flushAll(); // ส่งของที่ค้างจากรอบก่อนต่อทันที
+  checkDbUsage();
   startPolling(); // ยังคง poll ทุก 60 วิเป็น safety net เผื่อ Realtime หลุด/พลาด event
 }
 
