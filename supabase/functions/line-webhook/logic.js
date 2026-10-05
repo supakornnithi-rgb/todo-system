@@ -196,6 +196,29 @@ export function formatReply(type, data) {
   }
 }
 
+// ---------- หา user_id ของผู้ส่ง (L2P7: LINE bot หลายคน) ----------
+//
+// lookupUserId = ผลจาก select user_id from line_users where line_user_id = eventUserId (ไม่พบ -> null/undefined)
+// lookupError  = error ของ query นั้น (ถ้ามี) ; eventUserId = event.source.userId
+// envLineUserId/envOwnerId = secret LINE_USER_ID / OWNER_ID (fallback เฉพาะเจ้าของ เผื่อตารางหาย/ว่าง/query พัง)
+// คืน user_id ที่ใช้ scope ทุก query หรือ null ถ้าไม่รู้จักผู้ส่ง (-> ตอบรหัส LINE กลับ ไม่แตะข้อมูล)
+export function resolveUserId(args) {
+  args = args || {};
+  if (args.lookupUserId && !args.lookupError) return args.lookupUserId;
+  // ไม่พบในตาราง หรือ query ผิดพลาด: ใช้ fallback ได้เฉพาะเมื่อผู้ส่งคือ LINE_USER_ID ตัวเองและตั้ง OWNER_ID ไว้
+  if (args.eventUserId && args.envLineUserId && args.envOwnerId &&
+      args.eventUserId === args.envLineUserId) {
+    return args.envOwnerId;
+  }
+  return null;
+}
+
+// ข้อความตอบผู้ใช้ที่ยังไม่ลงทะเบียน (ตอบด้วย reply ซึ่งไม่กินโควตา push)
+export function formatUnregisteredReply(lineUserId) {
+  return 'ยังไม่ได้ลงทะเบียนใช้งาน bot นี้\nรหัส LINE ของคุณคือ:\n' + lineUserId +
+    '\n\nส่งรหัสนี้ให้ผู้ดูแลเพื่อลงทะเบียน';
+}
+
 // ---------- ตรวจลายเซ็น X-Line-Signature (Web Crypto — มีทั้งใน Deno และ Node ผ่าน globalThis.crypto) ----------
 
 function arrayBufferToBase64_(buf) {

@@ -9,8 +9,13 @@
 // secret ที่ต้องตั้งไว้ล่วงหน้า (Dashboard -> Edge Functions -> line-webhook -> Secrets):
 //   LINE_CHANNEL_ACCESS_TOKEN — token สำหรับเรียก LINE Messaging API (reply)
 //   LINE_CHANNEL_SECRET       — ใช้ตรวจ X-Line-Signature
-//   LINE_USER_ID              — userId ของเจ้าของ (allowlist คนเดียว)
-//   OWNER_ID                  — uuid ของเจ้าของใน Supabase auth (ใช้ scope ทุก query)
+//   LINE_USER_ID              — (ไม่บังคับ แล้ว) userId ของเจ้าของ ใช้เป็น fallback เท่านั้น
+//   OWNER_ID                  — (ไม่บังคับ แล้ว) uuid ของเจ้าของใน Supabase auth ใช้เป็น fallback เท่านั้น
+// L2P7: bot รองรับหลายคนแล้ว — หา user_id จากตาราง public.line_users (line_user_id -> user_id) ทุก event
+//   แล้ว scope ทุก query ด้วย user_id นั้น คนที่ยังไม่ลงทะเบียนจะได้ข้อความตอบกลับพร้อมรหัส LINE ของตัวเอง
+//   (ไม่แตะข้อมูลใด ๆ) ลงทะเบียนคนใหม่ด้วย supabase/L2P7_register_template.sql
+//   fallback: ถ้าหาในตารางไม่เจอ/query พัง และผู้ส่งตรงกับ LINE_USER_ID และตั้ง OWNER_ID ไว้ -> ใช้ OWNER_ID
+//   (เจ้าของใช้งานได้ต่อแม้ตารางหายหรือว่าง)
 // SUPABASE_URL และ SUPABASE_SERVICE_ROLE_KEY มาจาก Edge Function runtime เองอัตโนมัติ ไม่ต้องตั้งเอง
 //
 // คำสั่ง deploy:
@@ -25,6 +30,8 @@ import {
   bangkokTodayIso,
   formatReply,
   verifyLineSignature,
+  resolveUserId,
+  formatUnregisteredReply,
 } from './logic.js';
 
 const LINE_REPLY_URL = 'https://api.line.me/v2/bot/message/reply'; // Line.gs:15
@@ -56,7 +63,7 @@ async function callLineReply_(replyToken: string, text: string): Promise<void> {
   }
 }
 
-// เลขงาน -> {taskId, workspace} ผ่าน line_index ของ OWNER_ID เท่านั้น (พอร์ตจาก resolveLineNumbers_ Line.gs:182-191)
+// เลขงาน -> {taskId, workspace} ผ่าน line_index ของ user_id ที่ resolve แล้วเท่านั้น (พอร์ตจาก resolveLineNumbers_ Line.gs:182-191)
 async function resolveLineNumbers_(
   supabase: ReturnType<typeof createClient>,
   ownerId: string,
@@ -163,8 +170,8 @@ async function runCommand_(
 // ประมวลผล event เดียว — ผิดพลาดตรงไหนใน event นี้ ห้ามให้กระทบ event อื่นในชุดเดียวกัน (Task 3 ข้อ 4 ข้อสุดท้าย)
 async function processEvent_(
   supabase: ReturnType<typeof createClient>,
-  ownerLineUserId: string,
-  ownerId: string,
+  envLineUserId: string,
+  envOwnerId: string,
   event: any
 ): Promise<void> {
   let text: string | undefined;
@@ -189,17 +196,35 @@ async function processEvent_(
   // จับใน try ชั้นในเพราะ error หลุดออกมาจากที่อื่น) ให้ reply "เกิดข้อผิดพลาด: <message>" แบบ best effort
   // แล้วปล่อยผ่าน ไม่ throw ต่อ กัน event นี้พัง event อื่นในชุดเดียวกัน (Task 3 ข้อ 4 บรรทัดสุดท้าย)
   try {
-    // allowlist — ต้องตรงกับ LINE_USER_ID เท่านั้น ถ้าไม่ตรง (คนอื่นทัก) ไม่ตอบสนองเลย (Line.gs:77)
-    // ถ้ายังไม่ได้ตั้งค่า LINE_USER_ID เลย (secret ว่าง) พอร์ตพฤติกรรมเดิม Line.gs:70-76: บอก userId กลับไป
-    if (!ownerLineUserId) {
-      await callLineReply_(
-        replyToken,
-        'ยังไม่ได้ตั้งค่า LINE_USER_ID ครับ\nuserId ของคุณคือ:\n' + userId +
-          '\n\nเอาค่านี้ไปใส่ secret ชื่อ LINE_USER_ID ใน Supabase Edge Function แล้วลองพิมพ์คำสั่งใหม่อีกครั้ง'
-      );
+    // L2P7: หา user_id ของผู้ส่งจากตาราง line_users (ไม่ใช่ allowlist คนเดียวอีกต่อไป)
+    let lookupUserId: string | null = null;
+    let lookupError: unknown = null;
+    {
+      const { data, error } = await supabase
+        .from('line_users')
+        .select('user_id')
+        .eq('line_user_id', userId)
+        .maybeSingle();
+      if (error) {
+        lookupError = error;
+        console.error('ค้น line_users ล้มเหลว (ใช้ fallback เจ้าของถ้าตรงเงื่อนไข):', error.message);
+      } else if (data) {
+        lookupUserId = (data as any).user_id;
+      }
+    }
+    const ownerId = resolveUserId({
+      lookupUserId,
+      lookupError,
+      eventUserId: userId,
+      envLineUserId,
+      envOwnerId,
+    });
+    if (!ownerId) {
+      // ยังไม่ลงทะเบียน: ตอบรหัส LINE กลับ (reply ฟรี) แล้วจบ — ไม่เขียน line_events ไม่แตะ tasks
+      // เพื่อให้หลังลงทะเบียนแล้วส่ง event เดิมซ้ำ (retry) ยังทำงานได้
+      await callLineReply_(replyToken, formatUnregisteredReply(userId));
       return;
     }
-    if (userId !== ownerLineUserId) return; // Line.gs:77
 
     // de-dup ผ่าน line_events — insert ถ้าชนกัน (unique violation 23505) แปลว่าเคยประมวลผลไปแล้ว ข้ามเลย
     // ถ้าไม่มี webhookEventId ส่งมาเลย (ไม่ควรเกิดกับ LINE จริง) ประมวลผลไปเลยตามที่ Task 3 ข้อ 4 ระบุ
@@ -266,14 +291,15 @@ Deno.serve(async (req: Request) => {
     });
   }
 
-  const ownerLineUserId = Deno.env.get('LINE_USER_ID') || '';
-  const ownerId = Deno.env.get('OWNER_ID')!;
+  // fallback เจ้าของเท่านั้น (L2P7) — ผู้ใช้ปกติหา user_id จากตาราง line_users ใน processEvent_
+  const envLineUserId = Deno.env.get('LINE_USER_ID') || '';
+  const envOwnerId = Deno.env.get('OWNER_ID') || '';
   const supabase = supabaseClient_();
 
   // ประมวลผลทีละ event ตามลำดับ (ไม่ขนาน) เหมือน Line.gs:38 ((body.events || []).forEach(...))
   for (const event of events) {
     try {
-      await processEvent_(supabase, ownerLineUserId, ownerId, event);
+      await processEvent_(supabase, envLineUserId, envOwnerId, event);
     } catch (err) {
       // เผื่อ error หลุดจาก processEvent_ เอง (เช่น de-dup insert ล้มเหลวด้วยเหตุอื่น) — event ถัดไปต้องรันต่อ
       console.error('processEvent_ ล้มเหลว:', err);

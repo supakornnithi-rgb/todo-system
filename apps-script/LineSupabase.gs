@@ -19,8 +19,9 @@
  * เป๊ะ) ไม่รวมงาน someday (query กรอง day ไว้ในช่วง [จันทร์สัปดาห์นี้, todayIso] อยู่แล้ว งาน someday มี
  * day เป็น null จึงไม่ตรงเงื่อนไข gte/lte และไม่ติดมาอยู่แล้วโดยธรรมชาติของ PostgREST)
  */
-function collectLineTasksSupabase_(workspace, todayIso) {
-  var ownerId = getSupabaseOwnerId_();
+function collectLineTasksSupabase_(workspace, todayIso, userId) {
+  // L2P7: รับ userId ของผู้รับแต่ละคน ถ้าไม่ส่งมา fallback เป็นเจ้าของเดิม
+  var ownerId = userId || getSupabaseOwnerId_();
   var monday = mondayOf_(todayIso); // DateUtils.gs
 
   var path = '/rest/v1/tasks?select=id,title,project,day,done,sort_order,created_at' +
@@ -62,51 +63,77 @@ function collectLineTasksSupabase_(workspace, todayIso) {
 // ---------- สรุปงานประจำวัน (พอร์ตจาก sendDailySummary ใน Line.gs:237-262) ----------
 
 /**
+ * L2P7: คืนรายชื่อผู้รับสรุปงาน [{line_user_id, user_id, display_name}] จากตาราง line_users
+ * ถ้าตารางว่างหรืออ่านไม่ได้ (error) fallback เป็นเจ้าของคนเดียวแบบเดิม (LINE_USER_ID + SUPABASE_OWNER_ID)
+ * ถ้า LINE_USER_ID ว่างด้วย ก็คืนลิสต์ว่าง (ไม่มีใครให้ส่ง)
+ */
+function getLineRecipients_() {
+  try {
+    var res = supabaseRequest_('GET', '/rest/v1/line_users?select=line_user_id,user_id,display_name', null, null);
+    var rows = JSON.parse(res.text);
+    if (rows && rows.length > 0) return rows;
+    Logger.log('ตาราง line_users ว่าง — ใช้เจ้าของคนเดียวแทน');
+  } catch (err) {
+    Logger.log('อ่าน line_users ไม่สำเร็จ (' + err.message + ') — ใช้เจ้าของคนเดียวแทน');
+  }
+  var ownerLineUserId = getLineUserId_(); // Config.gs
+  if (!ownerLineUserId) return [];
+  return [{ line_user_id: ownerLineUserId, user_id: getSupabaseOwnerId_(), display_name: 'owner' }];
+}
+
+/**
  * เหมือน sendDailySummary() ทุกขั้นตอน ต่างกันแค่แหล่งข้อมูล: อ่านงานจาก Supabase (ไม่ใช่ Sheets) แล้ว
- * แทนที่แถว line_index ของเจ้าของใน Supabase (ลบของเดิมทั้งหมดก่อน insert ชุดใหม่) แทนการล้าง/เขียน
+ * แทนที่แถว line_index ของผู้รับใน Supabase (ลบของเดิมทั้งหมดก่อน insert ชุดใหม่) แทนการล้าง/เขียน
  * แท็บ LineIndex — Flex builder และ push ใช้ตัวเดิมจาก Line.gs ตรงๆ ไม่มีการพอร์ตซ้ำ
+ * L2P7: วนส่งให้ทุกคนใน line_users (แต่ละคนมี try/catch ของตัวเอง ล้มเหลวคนหนึ่งไม่กระทบคนอื่น)
  */
 function sendDailySummarySupabase() {
-  var ownerLineUserId = getLineUserId_(); // Config.gs — ผู้รับ push ฝั่ง LINE
-  if (!ownerLineUserId) {
-    Logger.log('ยังไม่ได้ตั้งค่า LINE_USER_ID ข้ามการส่งสรุปวันนี้ (ต้องพิมพ์คุยกับ bot ครั้งแรกก่อน)');
+  var recipients = getLineRecipients_();
+  if (!recipients.length) {
+    Logger.log('ไม่มีผู้รับสรุปงาน (line_users ว่างและยังไม่ได้ตั้งค่า LINE_USER_ID) ข้ามการส่งสรุปวันนี้');
     return;
   }
 
   var todayIso = todayIso_(); // DateUtils.gs
-  var personal = collectLineTasksSupabase_('Personal', todayIso);
-  var office = collectLineTasksSupabase_('Office', todayIso);
+  recipients.forEach(function (r) {
+    var name = r.display_name || r.line_user_id;
+    try {
+      var personal = collectLineTasksSupabase_('Personal', todayIso, r.user_id);
+      var office = collectLineTasksSupabase_('Office', todayIso, r.user_id);
 
-  var supabaseOwnerId = getSupabaseOwnerId_();
-  // แทนที่ line_index เดิมทั้งหมดของเจ้าของ (เหมือน clearLineIndex_ ใน Line.gs:275-279) กันตอบกลับอ้าง
-  // เลขจากข้อความเก่าที่หมดอายุแล้ว
-  supabaseRequest_('DELETE', '/rest/v1/line_index?user_id=eq.' + supabaseOwnerId, null, null);
+      // แทนที่ line_index เดิมทั้งหมดของผู้รับคนนี้ (เหมือน clearLineIndex_ ใน Line.gs:275-279) กันตอบกลับ
+      // อ้างเลขจากข้อความเก่าที่หมดอายุแล้ว
+      supabaseRequest_('DELETE', '/rest/v1/line_index?user_id=eq.' + r.user_id, null, null);
 
-  var n = 1;
-  var indexRows = [];
-  var numbered = personal.concat(office).map(function (t) {
-    var row = { number: n, task: t };
-    indexRows.push({
-      user_id: supabaseOwnerId,
-      number: n,
-      task_id: t.id,
-      workspace: t.workspace,
-      date_key: todayIso
-    });
-    n++;
-    return row;
+      var n = 1;
+      var indexRows = [];
+      var numbered = personal.concat(office).map(function (t) {
+        var row = { number: n, task: t };
+        indexRows.push({
+          user_id: r.user_id,
+          number: n,
+          task_id: t.id,
+          workspace: t.workspace,
+          date_key: todayIso
+        });
+        n++;
+        return row;
+      });
+
+      if (indexRows.length > 0) supabaseInsertBatched_('line_index', indexRows); // SupabaseClient.gs
+
+      var personalNumbered = numbered.filter(function (x) { return x.task.workspace === 'Personal'; });
+      var officeNumbered = numbered.filter(function (x) { return x.task.workspace === 'Office'; });
+
+      // ใช้ Flex builder และตัวส่ง push เดิมจาก Line.gs ตรงๆ (ไม่พอร์ตซ้ำ)
+      pushLineFlex_(r.line_user_id, buildDailySummaryFlex_(personalNumbered, officeNumbered));
+
+      Logger.log('ส่งสรุปงานประจำวันผ่าน Supabase สำเร็จ ให้ ' + name + ': Personal ' + personal.length +
+        ' งาน, Office ' + office.length + ' งาน, รวม ' + numbered.length + ' รายการ');
+    } catch (err) {
+      Logger.log('ส่งสรุปงานให้ ' + name + ' ไม่สำเร็จ (ข้ามไปคนถัดไป): ' + err.message);
+    }
   });
-
-  if (indexRows.length > 0) supabaseInsertBatched_('line_index', indexRows); // SupabaseClient.gs
-
-  var personalNumbered = numbered.filter(function (x) { return x.task.workspace === 'Personal'; });
-  var officeNumbered = numbered.filter(function (x) { return x.task.workspace === 'Office'; });
-
-  // ใช้ Flex builder และตัวส่ง push เดิมจาก Line.gs ตรงๆ (ไม่พอร์ตซ้ำ)
-  pushLineFlex_(ownerLineUserId, buildDailySummaryFlex_(personalNumbered, officeNumbered));
-
-  Logger.log('ส่งสรุปงานประจำวันผ่าน Supabase สำเร็จ: Personal ' + personal.length +
-    ' งาน, Office ' + office.length + ' งาน, รวม ' + numbered.length + ' รายการ');
 }
 
 // ---------- ติดตั้ง/ถอด trigger สำหรับวัน switch-over ----------
